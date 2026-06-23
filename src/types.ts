@@ -1,5 +1,28 @@
 import type {Address, Cell, Transaction as CoreTransaction, OutAction} from "@ton/core"
 
+export interface RetraceNetworkConfig {
+    /**
+     * True for testnet-compatible address formatting.
+     */
+    testnet?: boolean
+    /**
+     * Toncenter-compatible API v2 base URL, for example, https://toncenter.com/api/v2.
+     */
+    v2BaseUrl: string
+    /**
+     * Toncenter-compatible API v3 base URL, for example, https://toncenter.com/api/v3.
+     */
+    v3BaseUrl: string
+    /**
+     * Optional Toncenter API key for both v2 and v3 requests.
+     */
+    toncenterApiKey?: string
+}
+
+export interface RetraceOptions {
+    additionalLibs?: [bigint, Cell][]
+}
+
 // TonCenter v3 API response for get transactions
 export interface TransactionData {
     transactions: Transaction[]
@@ -144,7 +167,7 @@ export interface AccountState {
     code_hash: string
 }
 
-// v4 transaction info
+// Raw transaction BoC paired with the shard block that contains it.
 export interface RawTransaction {
     block: {
         workchain: number
@@ -154,14 +177,6 @@ export interface RawTransaction {
         fileHash: string
     }
     tx: CoreTransaction
-}
-
-// dton get_lib response
-export interface GetLibResponse {
-    data: {
-        get_lib: string
-    }
-    errors: unknown[]
 }
 
 // toncenter v3 blocks response
@@ -199,23 +214,6 @@ export interface Block {
     want_merge: boolean
     want_split: boolean
     workchain: number
-}
-
-export interface ShardInfo {
-    workchain: number
-    shard: string
-    seqno: number
-    transactions: {
-        lt: string
-        hash: string
-        account: string
-    }[]
-    fileHash: string
-    rootHash: string
-}
-
-export interface BlockInfo {
-    shards: ShardInfo[]
 }
 
 export type ComputeInfo =
@@ -264,6 +262,17 @@ export interface TraceInMessage {
      * Opcode of the in-message
      */
     opcode: number | undefined
+}
+
+export interface TraceAccountState {
+    /**
+     * Serialized ShardAccount before the emulated transaction, base64 BoC.
+     */
+    shardAccountBefore: string
+    /**
+     * Serialized ShardAccount after the emulated transaction, base64 BoC.
+     */
+    shardAccountAfter: string
 }
 
 export interface TraceEmulatedTx {
@@ -344,6 +353,10 @@ export interface TraceResult {
      */
     inMsg: TraceInMessage
     /**
+     * Serialized account state before and after emulation.
+     */
+    account: TraceAccountState
+    /**
      * Information about money-related things
      */
     money: TraceMoneyResult
@@ -355,39 +368,4 @@ export interface TraceResult {
         commitHash: string
         commitDate: string
     }
-}
-
-export type StateFromAPI =
-    | {
-          type: "uninit"
-      }
-    | {
-          data: string | null
-          code: string | null
-          type: "active"
-      }
-    | {
-          type: "frozen"
-          stateHash: string
-      }
-
-export interface AccountFromAPI {
-    balance: {
-        coins: string
-        currencies: Record<string, string>
-    }
-    state: StateFromAPI
-    last: {
-        lt: string
-        hash: string
-    } | null
-    storageStat: {
-        lastPaid: number
-        duePayment: string | null
-        used: {
-            bits: number
-            cells: number
-            publicCells?: number | undefined
-        }
-    } | null
 }

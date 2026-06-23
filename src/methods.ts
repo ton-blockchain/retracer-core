@@ -11,44 +11,39 @@ import {
     storeShardAccount,
     Transaction,
 } from "@ton/core"
-import axios, {AxiosResponse} from "axios"
 import {
-    AccountFromAPI,
     Block,
-    BlockInfo,
+    BlockRef,
     BlocksResponse,
     ComputeInfo,
-    GetLibResponse,
     RawTransaction,
-    StateFromAPI,
+    RetraceNetworkConfig,
     TraceMoneyResult,
     TransactionData,
 } from "./types"
-import {TonClient, TonClient4} from "@ton/ton"
 import {
     BlockId,
     EmulationResult,
     EmulationResultSuccess,
+    Executor,
     PrevBlocksInfo,
     TickOrTock,
 } from "@ton/sandbox/dist/executor/Executor"
-import {Blockchain, Executor} from "@ton/sandbox"
 import {runtime} from "ton-assembly"
-import {base64ToBigint, wait} from "./utils"
-import {AccountState as CoreAccountState} from "@ton/core/dist/types/AccountState"
-
-// We don't usually want to store keys this way, but without keys it's almost
-// impossible to use API calls :(
-const TONCENTER_API_KEY =
-    process.env["TONCENTER_API_KEY"] ??
-    "49efa980ccdcd018fd09d387e63537afd9db4dbb8509d69e7bc2303ca2b2c860"
-const DTON_API_KEY = process.env["DTON_API_KEY"] ?? "fpYxhGTWfIe3ZEf2s6vvgAGmps_qnNmD"
-const BASE_TIMEOUT = 20_000
+import {
+    toncenterAddressParam,
+    toncenterHashToBuffer,
+    toncenterV2Get,
+    toncenterV2JsonRpc,
+    toncenterV3Get,
+    toncenterV3HashParam,
+    toncenterV3ShardParam,
+} from "./networks"
 
 /**
  * Minimal “handle” for locating a transaction on the TON blockchain.
  * A tuple of (lt, hash, address) is guaranteed to be unique and can be
- * passed to RPC methods such as `getAccountTransactions` to retrieve
+ * passed to RPC methods such as `getTransactions` to retrieve
  * the full on‑chain record.
  *
  * Can be obtained by {@link findBaseTxByHash}.
@@ -66,27 +61,26 @@ export interface BaseTxInfo {
      * Contract address that issued / owns the transaction.
      */
     address: Address
+    /**
+     * Shard block reference returned by Toncenter v3 for this transaction.
+     */
+    block: BlockRef
 }
 
 /**
- * Returns base transaction information by its hash.
- * @param testnet if true finds in testnet otherwise in mainnet
- * @param txHash  transaction hash to find
+ * Returns base transaction information by its hash using Toncenter v3.
+ * @param network Toncenter-compatible network configuration.
+ * @param txHash  Transaction hash to find.
  */
 export const findBaseTxByHash = async (
-    testnet: boolean,
+    network: RetraceNetworkConfig,
     txHash: string,
 ): Promise<BaseTxInfo | undefined> => {
-    const res: AxiosResponse<TransactionData> = await axios.get(
-        `https://${testnet ? "testnet." : ""}toncenter.com/api/v3/transactions`,
-        {
-            params: {hash: txHash, limit: 1},
-            headers: {
-                "X-API-Key": TONCENTER_API_KEY,
-            },
-        },
-    )
-    const transactionInfo = res.data
+    const requestedHash = toncenterHashToBuffer(txHash)
+    const transactionInfo = await toncenterV3Get<TransactionData>(network, "transactions", {
+        hash: toncenterV3HashParam(requestedHash),
+        limit: 1,
+    })
 
     const rawTx = transactionInfo.transactions.at(0)
     if (rawTx === undefined) {
@@ -94,75 +88,136 @@ export const findBaseTxByHash = async (
     }
 
     const lt = BigInt(rawTx.lt)
-    const hash = Buffer.from(rawTx.hash, "base64")
+    const hash = toncenterHashToBuffer(rawTx.hash)
+    if (!hash.equals(requestedHash)) {
+        return undefined
+    }
     const address = Address.parseRaw(rawTx.account)
+    const block = rawTx.block_ref
 
-    return {lt, hash, address}
+    return {lt, hash, address, block}
 }
 
 /**
- * Returns full information for transaction by base information obtained from `findBaseTxByHash`
- * @param testnet if true finds in testnet otherwise in mainnet
- * @param info    information for search
+ * Returns raw transaction BoC from Toncenter v2 and pairs it with the
+ * Toncenter v3 block reference captured by {@link findBaseTxByHash}.
+ *
+ * Toncenter v2 `getTransactions` returns the raw transaction cell but not the
+ * v4-style block envelope. The block reference is therefore carried in
+ * {@link BaseTxInfo} from the v3 transaction lookup.
+ *
+ * @param network Toncenter-compatible network configuration.
+ * @param info    Base transaction information for search.
  */
 export const findRawTxByHash = async (
-    testnet: boolean,
+    network: RetraceNetworkConfig,
     info: BaseTxInfo,
-): Promise<RawTransaction[]> => {
-    const {lt, hash, address} = info
-    const clientV4 = createTonClient4(testnet)
-    return clientV4.getAccountTransactions(address, lt, hash)
+): Promise<RawTransaction> => {
+    const {lt, hash, address, block} = info
+    const response = await toncenterV2JsonRpc<GetTransactionsResponse>(network, "getTransactions", {
+        address: toncenterAddressParam(network, address),
+        lt: lt.toString(),
+        hash: hash.toString("base64"),
+        limit: 1,
+        archival: true,
+    })
+
+    const hashBase64 = hash.toString("base64")
+    const rawTransaction = response.result?.find(
+        item => item.transaction_id.lt === lt.toString() && item.transaction_id.hash === hashBase64,
+    )
+    if (rawTransaction === undefined) {
+        throw new Error("getTransactions response does not contain requested transaction")
+    }
+
+    const [txCell] = Cell.fromBoc(Buffer.from(rawTransaction.data, "base64"))
+
+    return {
+        block: {
+            workchain: block.workchain,
+            seqno: block.seqno,
+            shard: block.shard,
+            rootHash: "",
+            fileHash: "",
+        },
+        tx: loadTransaction(txCell.beginParse()),
+    }
 }
+
+interface GetTransactionsResponse {
+    ok: boolean
+    error?: string
+    code?: number
+    result?: {
+        data: string
+        transaction_id: {
+            lt: string
+            hash: string
+        }
+    }[]
+}
+
+const GET_TRANSACTIONS_LIMIT = 1000
 
 /**
  * Return the shard‑block header that contains a given
  * {@link RawTransaction}.
  *
- * @param testnet  Mainnet/testnet flag.
+ * @param network Toncenter-compatible network configuration.
  * @param tx       Raw transaction object.
  * @returns        The matching shard‑block or `undefined`
  *                 if Toncenter cannot find it.
  */
 export const findShardBlockForTx = async (
-    testnet: boolean,
+    network: RetraceNetworkConfig,
     tx: RawTransaction,
 ): Promise<Block | undefined> => {
     const shard = tx.block
 
-    // normalize potentially negative shard to positive one
-    const shardInt = BigInt(shard.shard)
-    const shardUint = shardInt < 0 ? shardInt + BigInt("0x10000000000000000") : shardInt
+    const response = await toncenterV3Get<BlocksResponse>(network, "blocks", {
+        workchain: shard.workchain,
+        shard: toncenterV3ShardParam(shard.shard),
+        seqno: shard.seqno,
+    })
 
-    const res: AxiosResponse<BlocksResponse> = await axios.get(
-        `https://${testnet ? "testnet." : ""}toncenter.com/api/v3/blocks`,
-        {
-            params: {
-                workchain: shard.workchain,
-                shard: "0x" + shardUint.toString(16),
-                seqno: shard.seqno,
-            },
-            headers: {
-                "X-API-Key": TONCENTER_API_KEY,
-            },
-        },
-    )
-
-    return res.data.blocks[0]
+    return response.blocks[0]
 }
 
 /**
- * Return a master‑block (full representation, including `shards[]`)
- * by its `seqno` via TON API v4.
+ * Return the smallest logical time for an account inside the shard block that
+ * contains the target transaction.
  *
- * @param testnet  Mainnet/testnet flag.
- * @param seqno    Master‑block sequence number.
- * @returns        The complete {@link BlockInfo}.
+ * @param network Toncenter-compatible network configuration.
+ * @param address  Account address.
+ * @param block    Target transaction shard block reference.
+ * @param targetLt Target transaction logical time.
+ * @returns        The earliest account transaction lt in the same shard block.
  */
-export const findFullBlockForSeqno = async (
-    testnet: boolean,
-    seqno: number,
-): Promise<BlockInfo> => {
-    return createTonClient4(testnet).getBlock(seqno)
+export const findMinLtInShardBlock = async (
+    network: RetraceNetworkConfig,
+    address: Address,
+    block: RawTransaction["block"],
+    targetLt: bigint,
+): Promise<bigint> => {
+    const response = await toncenterV3Get<TransactionData>(network, "transactions", {
+        account: address.toRawString(),
+        workchain: block.workchain,
+        shard: toncenterV3ShardParam(block.shard),
+        seqno: block.seqno,
+        end_lt: targetLt.toString(),
+        limit: GET_TRANSACTIONS_LIMIT,
+        sort: "asc",
+    })
+
+    let minLt = targetLt
+    for (const transaction of response.transactions) {
+        const lt = BigInt(transaction.lt)
+        if (lt < minLt) {
+            minLt = lt
+        }
+    }
+
+    return minLt
 }
 
 /**
@@ -171,29 +226,40 @@ export const findFullBlockForSeqno = async (
  *
  * Used to reconstruct in‑block history before emulation.
  *
- * @param testnet  Mainnet/testnet flag.
+ * @param network Toncenter-compatible network configuration.
  * @param baseTx   The “upper bound” transaction.
  * @param minLt    Lower logical‑time boundary
  * @returns        Transactions ordered **newest → oldest**.
  */
 export const findAllTransactionsBetween = async (
-    testnet: boolean,
+    network: RetraceNetworkConfig,
     baseTx: BaseTxInfo,
     minLt: bigint,
 ): Promise<Transaction[]> => {
-    const clientV2 = new TonClient({
-        endpoint: `https://${testnet ? "testnet." : ""}toncenter.com/api/v2/jsonRPC`,
-        timeout: BASE_TIMEOUT,
-        apiKey: TONCENTER_API_KEY,
-    })
-
-    return clientV2.getTransactions(baseTx.address, {
-        inclusive: true,
+    const response = await toncenterV2JsonRpc<GetTransactionsResponse>(network, "getTransactions", {
+        address: toncenterAddressParam(network, baseTx.address),
         lt: baseTx.lt.toString(),
         to_lt: (minLt - 1n).toString(),
         hash: baseTx.hash.toString("base64"),
+        limit: GET_TRANSACTIONS_LIMIT,
         archival: true,
-        limit: 1000,
+    })
+
+    const transactions = response.result ?? []
+    const lastTransaction = transactions.at(-1)
+    if (
+        transactions.length === GET_TRANSACTIONS_LIMIT &&
+        lastTransaction !== undefined &&
+        BigInt(lastTransaction.transaction_id.lt) > minLt
+    ) {
+        throw new Error(
+            `Too many account transactions in shard block: replay range exceeds ${GET_TRANSACTIONS_LIMIT}`,
+        )
+    }
+
+    return transactions.map(rawTransaction => {
+        const [transactionCell] = Cell.fromBoc(Buffer.from(rawTransaction.data, "base64"))
+        return loadTransaction(transactionCell.beginParse())
     })
 }
 
@@ -202,16 +268,33 @@ export const findAllTransactionsBetween = async (
  * encloses the target transaction. Required by the TVM executor to
  * calculate gas, random‑seed and limits exactly as onchain.
  *
- * @param testnet   Mainnet/testnet flag.
- * @param block     Full master‑block object (with `shards[]` array).
+ * @param network Toncenter-compatible network configuration.
+ * @param mcSeqno  Master-block sequence number.
  * @returns         Config cell as a string.
  */
-export const getBlockConfig = async (testnet: boolean, block: BlockInfo): Promise<string> => {
-    const clientV4 = createTonClient4(testnet)
+export const getBlockConfig = async (
+    network: RetraceNetworkConfig,
+    mcSeqno: number,
+): Promise<string> => {
+    const response = await toncenterV2Get<GetConfigAllResponse>(network, "getConfigAll", {
+        seqno: mcSeqno,
+    })
+    const bytes = response.result?.config?.bytes
+    if (typeof bytes !== "string" || bytes.length === 0) {
+        throw new Error("getConfigAll response is missing result.config.bytes")
+    }
+    return bytes
+}
 
-    const blockSeqno = block.shards[0].seqno
-    const res = await clientV4.getConfig(blockSeqno)
-    return res.config.cell
+interface GetConfigAllResponse {
+    ok: boolean
+    error?: string
+    code?: number
+    result?: {
+        config?: {
+            bytes?: string
+        }
+    }
 }
 
 const MASTERCHAIN_SHARD = -(1n << 63n)
@@ -287,16 +370,16 @@ function collectInstructionNames(value: unknown, found: Set<string>): void {
  * the last 16 masterchain blocks with seqno divisible by 100 (only
  * read by PREVMCBLOCKS_100).
  *
- * @param testnet  Mainnet/testnet flag.
+ * @param network Toncenter-compatible network configuration.
  * @param mcSeqno  Master‑block sequence number that contains the tx.
  * @param options  Set `with100` to also fetch `lastMcBlocks100`.
  */
 export const getPrevBlocksInfo = async (
-    testnet: boolean,
+    network: RetraceNetworkConfig,
     mcSeqno: number,
     options?: {with100?: boolean},
 ): Promise<PrevBlocksInfo> => {
-    const header = await toncenterV2Get<GetBlockHeaderResponse>(testnet, "getBlockHeader", {
+    const header = await toncenterV2Get<GetBlockHeaderResponse>(network, "getBlockHeader", {
         workchain: -1,
         shard: MASTERCHAIN_SHARD_HEX,
         seqno: mcSeqno,
@@ -325,12 +408,12 @@ export const getPrevBlocksInfo = async (
     const lookupAll = async (seqnos: number[]): Promise<BlockId[]> => {
         const blocks: BlockId[] = []
         for (const seqno of seqnos) {
-            blocks.push(await lookupMasterchainBlock(testnet, seqno))
+            blocks.push(await lookupMasterchainBlock(network, seqno))
         }
         return blocks
     }
 
-    const prevKeyBlock = await lookupMasterchainBlock(testnet, header.result.prev_key_block_seqno)
+    const prevKeyBlock = await lookupMasterchainBlock(network, header.result.prev_key_block_seqno)
     const lastMcBlocks = await lookupAll(lastSeqnos)
     const lastMcBlocks100 = with100 ? await lookupAll(seqnos100) : undefined
 
@@ -353,8 +436,11 @@ interface GetBlockHeaderResponse {
     }
 }
 
-async function lookupMasterchainBlock(testnet: boolean, seqno: number): Promise<BlockId> {
-    const res = await toncenterV2Get<LookupBlockResponse>(testnet, "lookupBlock", {
+async function lookupMasterchainBlock(
+    network: RetraceNetworkConfig,
+    seqno: number,
+): Promise<BlockId> {
+    const res = await toncenterV2Get<LookupBlockResponse>(network, "lookupBlock", {
         workchain: -1,
         shard: MASTERCHAIN_SHARD_HEX,
         seqno,
@@ -369,45 +455,6 @@ async function lookupMasterchainBlock(testnet: boolean, seqno: number): Promise<
     }
 }
 
-async function toncenterV2Get<T extends {ok: boolean; error?: string; code?: number}>(
-    testnet: boolean,
-    method: string,
-    params: Record<string, string | number>,
-): Promise<T> {
-    const RETRY_COUNT = 5
-    for (let attempt = 1; ; attempt++) {
-        try {
-            const res = await axios.get<T>(
-                `https://${testnet ? "testnet." : ""}toncenter.com/api/v2/${method}`,
-                {
-                    params,
-                    headers: {
-                        "X-API-Key": TONCENTER_API_KEY,
-                    },
-                    timeout: BASE_TIMEOUT,
-                },
-            )
-            if (!res.data.ok) {
-                throw new Error(
-                    `${method} request failed: ${res.data.error ?? "unknown error"}` +
-                        (res.data.code === undefined ? "" : ` (code ${res.data.code})`),
-                )
-            }
-            return res.data
-        } catch (error: unknown) {
-            if (
-                attempt < RETRY_COUNT &&
-                axios.isAxiosError(error) &&
-                error.response?.status === 429
-            ) {
-                await wait(1000 * attempt)
-                continue
-            }
-            throw error
-        }
-    }
-}
-
 /**
  * Return an account snapshot *before* the current master‑block.
  * The snapshot is converted to {@link ShardAccount} so it can be
@@ -418,39 +465,26 @@ async function toncenterV2Get<T extends {ok: boolean; error?: string; code?: num
  * (including `storage_extra`, which a reconstruction from the parsed
  * API would lose) is preserved.
  *
- * @param testnet   Mainnet/testnet flag.
+ * @param network Toncenter-compatible network configuration.
  * @param address   Account address.
- * @param block     Master‑block N (the one that contains the tx).
+ * @param mcSeqno   Master-block N sequence number (the one that contains the tx).
  * @returns         ShardAccount representing state on master‑block N‑1.
  */
 export const getBlockAccount = async (
-    testnet: boolean,
+    network: RetraceNetworkConfig,
     address: Address,
-    block: BlockInfo,
+    mcSeqno: number,
 ): Promise<ShardAccount> => {
-    const blockSeqno = block.shards[0].seqno
     // The genesis state (block 0) is not available via any API: fall
     // back to the current block's state as best approximation.
     // stateUpdateHashOk will be false for genesis transactions.
-    const seqno = blockSeqno > 1 ? blockSeqno - 1 : blockSeqno
+    const seqno = mcSeqno > 1 ? mcSeqno - 1 : mcSeqno
 
-    const res: AxiosResponse<GetShardAccountCellResponse> = await axios.get(
-        `https://${testnet ? "testnet." : ""}toncenter.com/api/v2/getShardAccountCell`,
-        {
-            params: {address: address.toString(), seqno},
-            headers: {
-                "X-API-Key": TONCENTER_API_KEY,
-            },
-            timeout: BASE_TIMEOUT,
-        },
+    const {result} = await toncenterV2Get<GetShardAccountCellResponse>(
+        network,
+        "getShardAccountCell",
+        {address: toncenterAddressParam(network, address), seqno},
     )
-    const {ok, error, code, result} = res.data
-    if (!ok) {
-        throw new Error(
-            `getShardAccountCell request failed: ${error ?? "unknown error"}` +
-                (code === undefined ? "" : ` (code ${code})`),
-        )
-    }
     if (typeof result !== "object" || typeof result.bytes !== "string") {
         throw new Error("getShardAccountCell response is missing result.bytes")
     }
@@ -471,111 +505,39 @@ interface GetShardAccountCellResponse {
           }
 }
 
-/**
- * Scan every shard‑summary inside a master‑block and return the
- * smallest `lt` for the specified account. This value marks the
- * earliest transaction of the account inside that master‑block.
- *
- * @param tx         Target (latest) transaction object.
- * @param address    Account address.
- * @param block      Master‑block that contains `tx`.
- * @returns          Minimum logical‑time as `bigint`.
- */
-export const computeMinLt = (tx: Transaction, address: Address, block: BlockInfo): bigint => {
-    let minLt = tx.lt
-    const addrStr = address.toString()
-    for (const shard of block.shards) {
-        for (const txInBlock of shard.transactions) {
-            if (txInBlock.account === addrStr && BigInt(txInBlock.lt) < minLt) {
-                minLt = BigInt(txInBlock.lt)
-            }
-        }
-    }
-    return minLt
-}
-
-/**
- * Load a library cell (T‑lib) from toncenter or dton.io GraphQL by its
- * 256‑bit hash.
- *
- * @param testnet  Mainnet/testnet flag.
- * @param hash     Hex string of the library hash.
- * @returns        Decoded {@link Cell} containing actual code.
- * @throws         Error if the library is missing on the server.
- */
-export const getLibraryByHash = async (testnet: boolean, hash: string): Promise<Cell> => {
-    try {
-        return await getLibraryByHashToncenter(testnet, hash)
-    } catch (error: unknown) {
-        console.log("Cannot get library by hash from toncenter:", error)
-        console.log("Trying dton...")
-
-        return getLibraryByHashDton(testnet, hash)
+interface GetLibrariesResponse {
+    ok: boolean
+    error?: string
+    code?: number
+    result: {
+        result: {
+            hash: string
+            data: string
+        }[]
     }
 }
 
 /**
- * Load a library cell (T‑lib) from dton.io GraphQL by its
- * 256‑bit hash.
+ * Load a library cell (T‑lib) from Toncenter by its 256‑bit hash.
  *
- * @param testnet  Mainnet/testnet flag.
+ * @param network Toncenter-compatible network configuration.
  * @param hash     Hex string of the library hash.
  * @returns        Decoded {@link Cell} containing actual code.
  * @throws         Error if the library is missing on the server.
  */
-export const getLibraryByHashDton = async (testnet: boolean, hash: string): Promise<Cell> => {
-    await wait(1000) // needed if we load several libs in a row
-    const dtonEndpoint = `https://${testnet ? "testnet." : ""}dton.io/${DTON_API_KEY}/graphql`
-    const graphqlQuery = {
-        query: `query fetchAuthor { get_lib(lib_hash: "${hash}") }`,
-        variables: {},
+export const getLibraryByHash = async (
+    network: RetraceNetworkConfig,
+    hash: string,
+): Promise<Cell> => {
+    const response = await toncenterV2Get<GetLibrariesResponse>(network, "getLibraries", {
+        libraries: hash,
+    })
+    const data = response.result.result[0]?.data
+    if (typeof data !== "string" || data.length === 0) {
+        throw new Error(`Toncenter library response does not contain library ${hash}`)
     }
-    try {
-        const res: AxiosResponse<GetLibResponse> = await axios.post(dtonEndpoint, graphqlQuery, {
-            headers: {
-                "Content-Type": "application/json",
-            },
-        })
-        return Cell.fromBase64(res.data.data.get_lib)
-    } catch (error) {
-        console.error("Error fetching library from dton:", error)
-        if (error instanceof Error) {
-            throw new Error("Get library on dton's graphql: " + error.message)
-        }
-        throw error
-    }
-}
 
-/**
- * Load a library cell (T‑lib) from toncenter by its
- * 256‑bit hash.
- *
- * @param testnet  Mainnet/testnet flag.
- * @param hash     Hex string of the library hash.
- * @returns        Decoded {@link Cell} containing actual code.
- * @throws         Error if the library is missing on the server.
- */
-export const getLibraryByHashToncenter = async (testnet: boolean, hash: string): Promise<Cell> => {
-    try {
-        const endpoint = `https://${testnet ? "testnet." : ""}toncenter.com/api/v2/getLibraries`
-        const res: AxiosResponse<{
-            ok: boolean
-            result: {result: {hash: string; data: string}[]}
-        }> = await axios.get(endpoint, {
-            params: {libraries: hash},
-            headers: {
-                "Content-Type": "application/json",
-                "X-API-Key": TONCENTER_API_KEY,
-            },
-        })
-        return Cell.fromBase64(res.data.result.result[0].data)
-    } catch (error) {
-        console.error("Error fetching library from toncenter:", error)
-        if (error instanceof Error) {
-            throw new Error("Get library on toncenter: " + error.message)
-        }
-        throw error
-    }
+    return Cell.fromBase64(data)
 }
 
 /**
@@ -583,7 +545,7 @@ export const getLibraryByHashToncenter = async (testnet: boolean, hash: string):
  * code of the pending message, detect all **exotic library cells**
  * (tag 2) and build a dict mapping hash → real library code.
  *
- * @param testnet          Mainnet/testnet flag.
+ * @param network          Toncenter-compatible network configuration.
  * @param account          Current {@link ShardAccount} snapshot.
  * @param additionalLibs   Additional libraries to use.
  * @param tx               Transaction whose `inMessage` may include `Init`.
@@ -592,7 +554,7 @@ export const getLibraryByHashToncenter = async (testnet: boolean, hash: string):
  *                         original code is just an exotic library cell
  */
 export const collectUsedLibraries = async (
-    testnet: boolean,
+    network: RetraceNetworkConfig,
     account: ShardAccount,
     tx: Transaction,
     additionalLibs: [bigint, Cell][],
@@ -610,7 +572,7 @@ export const collectUsedLibraries = async (
 
         const libHash = cs.loadBuffer(32)
         const libHashHex = libHash.toString("hex").toUpperCase()
-        const actualCode = await getLibraryByHash(testnet, libHashHex)
+        const actualCode = await getLibraryByHash(network, libHashHex)
         libs.set(BigInt(`0x${libHashHex}`), actualCode)
         return actualCode
     }
@@ -648,78 +610,6 @@ export const collectUsedLibraries = async (
 
     // emulator expects libraries as a Cell with immediate dictionary
     return [beginCell().storeDictDirect(libs).endCell(), loadedCellCode]
-}
-
-/**
- * Convert an account record received from Toncenter / Tonhub API
- * (`AccountFromAPI`) into the low‑level `ShardAccount` structure
- * expected by core TON libraries and the sandbox executor.
- *
- * @param apiAccount  Raw JSON account object from REST API.
- * @param address     Parsed {@link Address} of the account
- *                    (API does not always include it).
- * @returns           A fully‑typed {@link ShardAccount} ready for
- *                    serialization with `storeShardAccount`.
- */
-export function createShardAccountFromAPI(
-    apiAccount: AccountFromAPI,
-    address: Address,
-): ShardAccount {
-    const toBigint = (num: number | undefined): bigint => (num === undefined ? 0n : BigInt(num))
-
-    return {
-        account: {
-            addr: address,
-            storage: {
-                lastTransLt: BigInt(apiAccount.last?.lt ?? 0),
-                balance: {coins: BigInt(apiAccount.balance.coins)},
-                state: normalizeStateFromAPI(apiAccount.state),
-            },
-            storageStats: {
-                used: {
-                    cells: toBigint(apiAccount.storageStat?.used.cells),
-                    bits: toBigint(apiAccount.storageStat?.used.bits),
-                },
-                lastPaid: apiAccount.storageStat?.lastPaid ?? 0,
-                duePayment:
-                    typeof apiAccount.storageStat?.duePayment === "string"
-                        ? BigInt(apiAccount.storageStat.duePayment)
-                        : undefined,
-                storageExtra: null,
-            },
-        },
-        lastTransactionLt: BigInt(apiAccount.last?.lt ?? 0),
-        lastTransactionHash:
-            apiAccount.last?.hash === undefined ? 0n : base64ToBigint(apiAccount.last.hash),
-    }
-}
-
-/**
- * Transform the `state` sub‑object of an API response into the canonical
- * `AccountState` union used by `@ton/core`.
- *
- * @param givenState  State payload exactly as returned by Toncenter API.
- * @returns           Normalised `AccountState` object suitable for TVM.
- */
-export function normalizeStateFromAPI(givenState: StateFromAPI): CoreAccountState {
-    if (givenState.type === "uninit") {
-        return {type: "uninit"}
-    }
-
-    if (givenState.type === "frozen") {
-        return {
-            type: "frozen",
-            stateHash: base64ToBigint(givenState.stateHash),
-        }
-    }
-
-    return {
-        type: "active",
-        state: {
-            code: givenState.code === null ? undefined : Cell.fromBase64(givenState.code),
-            data: givenState.data === null ? undefined : Cell.fromBase64(givenState.data),
-        },
-    }
 }
 
 /**
@@ -783,18 +673,8 @@ export const prepareEmulator = async (
     randSeed: Buffer,
     prevBlocksInfo?: PrevBlocksInfo,
 ) => {
-    const blockchain = await Blockchain.create()
-    blockchain.verbosity.print = false // don't print logs to stdout
-    blockchain.verbosity.vmLogs = "vm_logs_verbose" // most verbose logs including full Cells
-
-    const executor = blockchain.executor
-    const emulatorVersion =
-        executor instanceof Executor
-            ? executor.getVersion()
-            : {
-                  commitHash: "",
-                  commitDate: "",
-              }
+    const executor = await Executor.create()
+    const emulatorVersion = executor.getVersion()
 
     async function emulate(tx: Transaction, shardAccountBase64: string): Promise<EmulationResult> {
         const inMsg = tx.inMessage
@@ -877,6 +757,9 @@ function extractRawInMessageCell(tx: Transaction): Cell | null {
  *
  * @param res            Successful result from TVM executor.
  * @param balanceBefore  Balance **before** the emulated tx.
+ * @param contractAddress Address of the emulated contract. Used when
+ *                        the transaction has no incoming message,
+ *                        for example tick-tock transactions.
  * @returns              Breakdown containing sender/dest, amounts,
  *                       gas usage and the parsed `emulatedTx`.
  */
@@ -1015,13 +898,3 @@ export const calculateSentTotal = (tx: Transaction): bigint => {
  */
 export const shardAccountToBase64 = (shardAccountBeforeTx: ShardAccount) =>
     beginCell().store(storeShardAccount(shardAccountBeforeTx)).endCell().toBoc().toString("base64")
-
-const createTonClient4 = (testnet: boolean) =>
-    new TonClient4({
-        endpoint: `https://${testnet ? "sandbox" : "mainnet"}-v4.tonhubapi.com`,
-        timeout: BASE_TIMEOUT,
-        requestInterceptor: config => {
-            config.headers["Content-Type"] = "application/json"
-            return config
-        },
-    })

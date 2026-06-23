@@ -8,7 +8,7 @@
 - **Block and account data collection**: Obtain account state snapshots, block configuration, and transaction history.
 - **Work with libraries and contracts**: Automatic loading and handling of exotic library cells.
 - **Analysis of incoming/outgoing messages, balance calculations, and VM log collection.**
-- **Supports both mainnet and testnet.**
+- **Supports mainnet, testnet, and custom Toncenter-compatible endpoints.**
 
 ## Installation
 
@@ -21,10 +21,10 @@ npm install txtracer-core
 ## Quick Start
 
 ```ts
-import {retrace} from "txtracer-core"
+import {RETRACE_MAINNET_NETWORK, retrace} from "txtracer-core"
 
 // Example: trace a transaction by its hash
-const result = await retrace(false, "YOUR_TX_HASH")
+const result = await retrace(RETRACE_MAINNET_NETWORK, "YOUR_TX_HASH")
 console.log(result)
 ```
 
@@ -33,37 +33,55 @@ console.log(result)
 ### Transaction Tracing
 
 ```ts
-import {retrace} from "txtracer-core"
+import {
+    RETRACE_MAINNET_NETWORK,
+    RETRACE_TESTNET_NETWORK,
+    findBaseTxByHash,
+    retrace,
+    retraceBaseTx,
+} from "txtracer-core"
+import type {RetraceNetworkConfig} from "txtracer-core"
 
 /**
- * @param testnet - true for testnet, false for mainnet
+ * @param network - Toncenter-compatible network configuration
  * @param txHash - hex transaction hash
  * @returns Detailed execution report (TraceResult)
  */
-const result1 = await retrace(testnet, txHash)
+const result1 = await retrace(RETRACE_MAINNET_NETWORK, txHash)
+const result2 = await retrace(RETRACE_TESTNET_NETWORK, txHash)
+
+const customNetwork: RetraceNetworkConfig = {
+    testnet: true,
+    v2BaseUrl: "https://example.com/api/v2",
+    v3BaseUrl: "https://example.com/api/v3",
+    toncenterApiKey: "optional-api-key",
+}
+const result3 = await retrace(customNetwork, txHash)
 
 /**
- * Retrace a transaction described as triple
+ * Retrace a transaction described by base transaction information.
+ * Base transaction info should be resolved through the same network first,
+ * because it carries the Toncenter v3 shard block reference.
  */
-const result2 = await retraceBaseTx(testnet, {
-    lt: 56166043000001n,
-    hash: Buffer.from("T6Y6ZoW71mrznFA0RyU/xV5ILpz9WUPJ9i9/4xPq1Is=", "base64"),
-    address: Address.parse("EQCqKZrrce8Ss6SZaLI-OkH2w8-xtPP9_ZvyyIZLhy9Hmpf8"),
-})
+const baseTx = await findBaseTxByHash(RETRACE_MAINNET_NETWORK, txHash)
+if (baseTx === undefined) {
+    throw new Error("Transaction not found")
+}
+const result4 = await retraceBaseTx(RETRACE_MAINNET_NETWORK, baseTx)
 ```
 
 ### Helper Methods
 
 All methods are exported from `txtracer-core` and can be used independently:
 
-- **findBaseTxByHash(testnet, txHash)** — Find base transaction info by hash.
-- **findRawTxByHash(testnet, baseTxInfo)** — Get full transaction details.
-- **findShardBlockForTx(testnet, rawTx)** — Find the shard block containing the transaction.
-- **findFullBlockForSeqno(testnet, seqno)** — Get master-block by seqno.
-- **findAllTransactionsBetween(testnet, baseTx, minLt)** — Get all account transactions in a given range.
-- **getBlockConfig(testnet, blockInfo)** — Get global config for a block.
-- **getBlockAccount(testnet, address, blockInfo)** — Get account snapshot before a block.
-- **collectUsedLibraries(testnet, account, tx)** — Collect used library cells.
+- **findBaseTxByHash(network, txHash)** — Find base transaction info by hash.
+- **findRawTxByHash(network, baseTxInfo)** — Get the raw transaction BoC and shard reference.
+- **findShardBlockForTx(network, rawTx)** — Find the shard block containing the transaction.
+- **findMinLtInShardBlock(network, address, block, targetLt)** — Find the earliest account transaction lt in the same shard block.
+- **findAllTransactionsBetween(network, baseTx, minLt)** — Get all account transactions in a given range.
+- **getBlockConfig(network, mcSeqno)** — Get global config for a masterchain block.
+- **getBlockAccount(network, address, mcSeqno)** — Get account snapshot before a masterchain block.
+- **collectUsedLibraries(network, account, tx)** — Collect used library cells.
 - **prepareEmulator(blockConfig, libs, randSeed)** — Prepare the emulator for transaction execution.
 - **emulatePreviousTransactions(...)** — Emulate a chain of previous transactions to restore the state.
 - **computeFinalData(...)** — Gather final data from emulation result.

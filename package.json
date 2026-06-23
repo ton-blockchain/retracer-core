@@ -1,6 +1,6 @@
 {
     "name": "txtracer-core",
-    "version": "0.8.0",
+    "version": "0.9.0",
     "description": "Core TxTracer library for collecting transaction information",
     "main": "dist/index.js",
     "scripts": {
@@ -32,13 +32,11 @@
         "!dist/test"
     ],
     "dependencies": {
-        "@ton-community/func-js": "^0.10.0",
-        "@ton/core": "^0.61.0",
-        "@ton/sandbox": "^0.43.0",
-        "@ton/ton": "^15.3.1",
-        "axios": "^1.6.7"
+        "@ton/core": "^0.63.1",
+        "@ton/sandbox": "^0.43.0"
     },
     "devDependencies": {
+        "@ton-community/func-js": "^0.10.0",
         "@ton/crypto": "^3.3.0",
         "@ton/test-utils": "^0.10.0",
         "@types/node": "^22.14.0",
