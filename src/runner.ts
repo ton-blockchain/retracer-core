@@ -1,15 +1,14 @@
-import {TraceResult} from "./types"
+import {RetraceNetworkConfig, RetraceOptions, TraceResult} from "./types"
 import {
     BaseTxInfo,
     collectUsedLibraries,
     computeFinalData,
-    computeMinLt,
     detectPrevBlocksUsage,
     emulatePreviousTransactions,
     findAllTransactionsBetween,
     findBaseTxByHash,
     findFinalActions,
-    findFullBlockForSeqno,
+    findMinLtInShardBlock,
     findRawTxByHash,
     findShardBlockForTx,
     getBlockAccount,
@@ -30,8 +29,8 @@ import {logs} from "ton-assembly"
  * actions and other data.
  *
  * Workflow (high level)
- * 1.  Locate the base transaction (`txLink`) on either mainnet or testnet.
- * 2.  Load its shard‑block and the enclosing master‑block; extract
+ * 1.  Locate the base transaction (`txLink`) via the provided Toncenter-compatible network.
+ * 2.  Load its shard-block and the enclosing master-block; extract
  *     `rand_seed`, config‑cell and the account snapshot *prior* to the block.
  * 3.  Re‑create the exact pre‑tx state by sequentially emulating all earlier
  *     account transactions that happened inside the same master‑block.
@@ -40,9 +39,9 @@ import {logs} from "ton-assembly"
  *     calculated state‑hash with the on‑chain one and assemble a
  *     `TraceResult` object for the caller.
  *
- * @param testnet         When `true`, work against testnet endpoints; otherwise mainnet.
- * @param txLink          Hex hash that uniquely identifies the transaction to retrace.
- * @param additionalLibs  Additional libraries to use.
+ * @param network Toncenter-compatible network configuration.
+ * @param txLink  Hex hash that uniquely identifies the transaction to retrace.
+ * @param options Additional libraries and retrace options.
  *
  * @returns        A {@link TraceResult} containing:
  *                 1. an integrity flag `stateUpdateHashOk`
@@ -58,15 +57,16 @@ import {logs} from "ton-assembly"
  *                 mismatch is detected after replay.
  */
 export const retrace = async (
-    testnet: boolean,
+    network: RetraceNetworkConfig,
     txLink: string,
-    additionalLibs: [bigint, Cell][] = [],
+    options: RetraceOptions = {},
 ): Promise<TraceResult> => {
-    const baseTx = await findBaseTxByHash(testnet, txLink)
+    const additionalLibs = options.additionalLibs ?? []
+    const baseTx = await findBaseTxByHash(network, txLink)
     if (baseTx === undefined) {
         throw new Error("Cannot find transaction info")
     }
-    const result = await retraceBaseTx(testnet, baseTx, additionalLibs)
+    const result = await retraceBaseTx(network, baseTx, additionalLibs)
     if (result.emulatedTx.computeInfo === "skipped") {
         return result
     }
@@ -106,7 +106,7 @@ export const retrace = async (
             // Stack before CTOS will contain the library cell as the top element.
             const topElement = stackLine.stack.at(-1)
             if (topElement?.$ === "Cell") {
-                const libraryResult = await tryLoadAsLibrary(topElement.boc, testnet)
+                const libraryResult = await tryLoadAsLibrary(topElement.boc, network)
                 if (libraryResult === undefined) {
                     // Either the library cell is not an exotic library cell, or we cannot load it.
                     return result
@@ -115,7 +115,9 @@ export const retrace = async (
                 // Now we have the library content and hash, so we try again with this library.
                 const {libHashHex, actualCode} = libraryResult
                 const additionalLib: [bigint, Cell] = [BigInt(`0x${libHashHex}`), actualCode]
-                return retrace(testnet, txLink, [...additionalLibs, additionalLib])
+                return retrace(network, txLink, {
+                    additionalLibs: [...additionalLibs, additionalLib],
+                })
             }
         }
     }
@@ -131,23 +133,18 @@ export const retrace = async (
  * See {@link retrace} for the full description of the workflow.
  */
 export const retraceBaseTx = async (
-    testnet: boolean,
+    network: RetraceNetworkConfig,
     baseTx: BaseTxInfo,
     additionalLibs: [bigint, Cell][] = [],
 ): Promise<TraceResult> => {
-    const [tx] = await findRawTxByHash(testnet, baseTx)
-    // eslint bug
-    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
-    if (tx === undefined) {
-        throw new Error("Cannot find transaction info")
-    }
+    const tx = await findRawTxByHash(network, baseTx)
     const shard = tx.block
-    const block = await findShardBlockForTx(testnet, tx)
+    const block = await findShardBlockForTx(network, tx)
     if (block === undefined) {
         throw new Error("Cannot find shard block for transaction")
     }
     // check if we correctly select master-block
-    if (block.root_hash !== shard.rootHash) {
+    if (shard.rootHash.length > 0 && block.root_hash !== shard.rootHash) {
         throw new Error(
             `root_hash mismatch in mc_seqno getter: ${shard.rootHash} != ${block.root_hash}`,
         )
@@ -157,20 +154,25 @@ export const retraceBaseTx = async (
     const mcSeqno = block.masterchain_block_ref.seqno
     // pseudorandom seed from the master‑block header — TVM needs it for deterministic RNG
     const randSeed = Buffer.from(block.rand_seed, "base64")
-    // load the complete master‑block object (includes the list of shard‑blocks)
-    const fullBlock = await findFullBlockForSeqno(testnet, mcSeqno)
-    // determine the earliest logical‑time (lt) for this account in the same master‑block
-    const minLt = computeMinLt(tx.tx, baseTx.address, fullBlock)
+    // determine the earliest logical-time (lt) for this account in the same shard block
+    const minLt = await findMinLtInShardBlock(network, baseTx.address, tx.block, tx.tx.lt)
     // find all transactions between the earliest one and the emulated transaction to correctly
     // recreate all state before execution of the emulated transaction
-    const [ourTx, ...prevTxsInBlock] = await findAllTransactionsBetween(testnet, baseTx, minLt)
+    const transactionsInBlock = await findAllTransactionsBetween(network, baseTx, minLt)
+    if (transactionsInBlock.length === 0) {
+        throw new Error("getTransactions range does not contain requested transaction")
+    }
+    const [ourTx, ...prevTxsInBlock] = transactionsInBlock as [Transaction, ...Transaction[]]
+    if (ourTx.lt !== tx.tx.lt) {
+        throw new Error("getTransactions range does not contain requested transaction")
+    }
     prevTxsInBlock.reverse() // allTxs contains txs from last to first one
 
     // retrieve block config to pass it to emulator
-    const blockConfig = await getBlockConfig(testnet, fullBlock)
-    const shardAccountBeforeTx = await getBlockAccount(testnet, baseTx.address, fullBlock)
+    const blockConfig = await getBlockConfig(network, mcSeqno)
+    const shardAccountBeforeTx = await getBlockAccount(network, baseTx.address, mcSeqno)
     const [libs, loadedCode] = await collectUsedLibraries(
-        testnet,
+        network,
         shardAccountBeforeTx,
         tx.tx,
         additionalLibs,
@@ -200,11 +202,16 @@ export const retraceBaseTx = async (
 
     // on fetch failure (e.g. genesis blocks are not available via API)
     // emulate without prev_blocks_info, as before
-    const fetchPrevBlocksInfo = async (with100: boolean): Promise<PrevBlocksInfo | undefined> =>
-        getPrevBlocksInfo(testnet, mcSeqno, {with100}).catch((error: unknown) => {
+    const fetchPrevBlocksInfo = async (with100: boolean): Promise<PrevBlocksInfo | undefined> => {
+        if (mcSeqno <= 1) {
+            return undefined
+        }
+
+        return getPrevBlocksInfo(network, mcSeqno, {with100}).catch((error: unknown) => {
             console.error("Cannot get prev blocks info", error)
             return undefined
         })
+    }
 
     const runEmulation = async (prevBlocksInfo?: PrevBlocksInfo) => {
         const {emulatorVersion, emulate, emulateTickTock} = await prepareEmulator(
@@ -231,6 +238,7 @@ export const retraceBaseTx = async (
             emulateAny,
             initialShardAccountBase64,
         )
+        const shardAccountBeforeTargetBase64 = shardAccountBase64
 
         // and then we emulate the target transaction
         const txRes = await emulateAny(ourTx, shardAccountBase64)
@@ -247,6 +255,7 @@ export const retraceBaseTx = async (
             logs: txRes.logs,
             result: txRes.result,
             prevBalance,
+            shardAccountBeforeTargetBase64,
             stateUpdateHashOk,
         }
     }
@@ -274,6 +283,7 @@ export const retraceBaseTx = async (
     const {
         emulatorVersion,
         prevBalance,
+        shardAccountBeforeTargetBase64,
         stateUpdateHashOk,
         result: emulationResult,
         logs: executorLogs,
@@ -299,6 +309,10 @@ export const retraceBaseTx = async (
             contract,
             amount,
             opcode,
+        },
+        account: {
+            shardAccountBefore: shardAccountBeforeTargetBase64,
+            shardAccountAfter: emulationResult.shardAccount,
         },
         money,
         emulatedTx: {
@@ -339,7 +353,7 @@ function txOpcode(transaction: Transaction): number | undefined {
  */
 async function tryLoadAsLibrary(
     cell: string,
-    testnet: boolean,
+    network: RetraceNetworkConfig,
 ): Promise<
     | {
           libHashHex: string
@@ -358,6 +372,6 @@ async function tryLoadAsLibrary(
 
     const libHash = cs.loadBuffer(32)
     const libHashHex = libHash.toString("hex").toUpperCase()
-    const actualCode = await getLibraryByHash(testnet, libHashHex)
+    const actualCode = await getLibraryByHash(network, libHashHex)
     return {libHashHex, actualCode}
 }
