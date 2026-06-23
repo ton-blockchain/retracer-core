@@ -1,0 +1,48 @@
+name: Publish to NPM
+
+on:
+  push:
+    tags:
+      - "[0-9]+.[0-9]+.[0-9]+"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions: {}
+
+jobs:
+  publish:
+    name: Publish
+    runs-on: ubuntu-latest
+    environment: deploy
+    if: github.repository == 'ton-blockchain/retracer-core'
+
+    permissions:
+      contents: read
+      id-token: write # required for npm provenance when publishing with trusted publishing.
+
+    steps:
+      - name: Fetch Sources
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Enable Corepack
+        run: corepack enable
+
+      - name: Setup Node
+        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+          package-manager-cache: false
+
+      - name: Install dependencies
+        run: yarn install --immutable --check-cache --check-resolutions
+
+      - name: Build
+        run: yarn run build
+
+      - name: Publish
+        run: npm publish --access public
