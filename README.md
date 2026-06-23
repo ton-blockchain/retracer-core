@@ -39,7 +39,7 @@ import {
     findBaseTxByHash,
     retrace,
     retraceBaseTx,
-} from "txtracer-core"
+} from "@ton/retracer-core"
 import type {RetraceNetworkConfig} from "@ton/retracer-core"
 
 /**

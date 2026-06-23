@@ -92,8 +92,8 @@ export function toncenterV3HashParam(hash: string | Buffer): string {
 
 export function toncenterV2HashParam(hash: string | Buffer): string {
     return Buffer.isBuffer(hash)
-        ? hash.toString("hex")
-        : toncenterHashToBuffer(hash).toString("hex")
+        ? hash.toString("base64")
+        : toncenterHashToBuffer(hash).toString("base64")
 }
 
 const toncenterHeaders = (

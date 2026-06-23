@@ -34,6 +34,7 @@ import {
     toncenterAddressParam,
     toncenterHashToBuffer,
     toncenterV2Get,
+    toncenterV2HashParam,
     toncenterV2JsonRpc,
     toncenterV3Get,
     toncenterV3HashParam,
@@ -117,12 +118,12 @@ export const findRawTxByHash = async (
     const response = await toncenterV2JsonRpc<GetTransactionsResponse>(network, "getTransactions", {
         address: toncenterAddressParam(network, address),
         lt: lt.toString(),
-        hash: hash.toString("base64"),
+        hash: toncenterV2HashParam(hash),
         limit: 1,
         archival: true,
     })
 
-    const hashBase64 = hash.toString("base64")
+    const hashBase64 = toncenterV2HashParam(hash)
     const rawTransaction = response.result?.find(
         item => item.transaction_id.lt === lt.toString() && item.transaction_id.hash === hashBase64,
     )
@@ -240,7 +241,7 @@ export const findAllTransactionsBetween = async (
         address: toncenterAddressParam(network, baseTx.address),
         lt: baseTx.lt.toString(),
         to_lt: (minLt - 1n).toString(),
-        hash: baseTx.hash.toString("base64"),
+        hash: toncenterV2HashParam(baseTx.hash),
         limit: GET_TRANSACTIONS_LIMIT,
         archival: true,
     })

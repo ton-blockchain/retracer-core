@@ -24,7 +24,7 @@ describe("toncenter hash params", () => {
         expect(toncenterV3HashParam(hex)).toBe(base64)
         expect(toncenterV3HashParam(`0x${hex}`)).toBe(base64)
         expect(toncenterV3HashParam(base64url)).toBe(base64)
-        expect(toncenterV2HashParam(base64url)).toBe(hex)
+        expect(toncenterV2HashParam(base64url)).toBe(base64)
     })
 })
 

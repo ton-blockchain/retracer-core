@@ -67,12 +67,12 @@ export interface Transaction {
     end_status: string
     total_fees: string
     total_fees_extra_currencies: Record<string, unknown>
-    description: Description
+    description?: Description
     block_ref: BlockRef
-    in_msg: InMessage
+    in_msg?: InMessage | null
     out_msgs: OutMessage[]
-    account_state_before: AccountState
-    account_state_after: AccountState
+    account_state_before?: AccountState | null
+    account_state_after?: AccountState | null
     emulated: boolean
 }
 
@@ -86,14 +86,14 @@ export interface Description {
     aborted: boolean
     destroyed: boolean
     credit_first: boolean
-    storage_ph: {
+    storage_ph?: {
         storage_fees_collected: string
         status_change: string
     }
-    credit_ph: {
+    credit_ph?: {
         credit: string
     }
-    compute_ph: {
+    compute_ph?: {
         skipped: boolean
         success: boolean
         msg_state_used: boolean
@@ -107,7 +107,7 @@ export interface Description {
         vm_init_state_hash: string
         vm_final_state_hash: string
     }
-    action: {
+    action?: {
         success: boolean
         valid: boolean
         no_funds: boolean
@@ -133,8 +133,8 @@ export interface BlockRef {
 
 export interface InMessage {
     hash: string
-    source: string
-    destination: string
+    source?: string | null
+    destination?: string | null
     value: string
     value_extra_currencies: Record<string, unknown>
     fwd_fee: string
