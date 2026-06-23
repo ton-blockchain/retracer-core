@@ -1,5 +1,5 @@
 {
-    "name": "txtracer-core",
+    "name": "@ton/retracer-core",
     "version": "0.8.0",
     "description": "Core TxTracer library for collecting transaction information",
     "main": "dist/index.js",
@@ -19,14 +19,14 @@
     ],
     "repository": {
         "type": "git",
-        "url": "git+https://github.com/ton-blockchain/TxTracer-core.git"
+        "url": "git+https://github.com/ton-blockchain/retracer-core.git"
     },
     "author": "TON Core",
     "license": "MIT",
     "bugs": {
-        "url": "https://github.com/ton-blockchain/TxTracer-core/issues"
+        "url": "https://github.com/ton-blockchain/retracer-core/issues"
     },
-    "homepage": "https://github.com/ton-blockchain/TxTracer-core#readme",
+    "homepage": "https://github.com/ton-blockchain/retracer-core#readme",
     "files": [
         "dist",
         "!dist/test"

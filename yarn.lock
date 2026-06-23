@@ -777,6 +777,29 @@ __metadata:
   languageName: node
   linkType: hard
 
+"@ton/retracer-core@workspace:.":
+  version: 0.0.0-use.local
+  resolution: "@ton/retracer-core@workspace:."
+  dependencies:
+    "@ton-community/func-js": "npm:^0.10.0"
+    "@ton/core": "npm:^0.61.0"
+    "@ton/crypto": "npm:^3.3.0"
+    "@ton/sandbox": "npm:^0.43.0"
+    "@ton/test-utils": "npm:^0.10.0"
+    "@ton/ton": "npm:^15.3.1"
+    "@types/node": "npm:^22.14.0"
+    axios: "npm:^1.6.7"
+    esbuild: "npm:^0.25.2"
+    eslint: "npm:^9.19.0"
+    eslint-plugin-unicorn: "npm:^56.0.1"
+    eslint-plugin-unused-imports: "npm:^4.1.4"
+    prettier: "npm:3.4.2"
+    typescript: "npm:^5.7.0"
+    typescript-eslint: "npm:^8.22.0"
+    vitest: "npm:^4.0.18"
+  languageName: unknown
+  linkType: soft
+
 "@ton/sandbox@npm:^0.43.0":
   version: 0.43.0
   resolution: "@ton/sandbox@npm:0.43.0"
@@ -3483,29 +3506,6 @@ __metadata:
   checksum: 10c0/069d9df51e8ad4a89fbe6f9806c68e06c65be3c7d42f0701cc43dba5f0d6064686b238bbff206c5addef8854e3ce00c643bff59432ea2f2c639feab0ee1a93f9
   languageName: node
   linkType: hard
-
-"txtracer-core@workspace:.":
-  version: 0.0.0-use.local
-  resolution: "txtracer-core@workspace:."
-  dependencies:
-    "@ton-community/func-js": "npm:^0.10.0"
-    "@ton/core": "npm:^0.61.0"
-    "@ton/crypto": "npm:^3.3.0"
-    "@ton/sandbox": "npm:^0.43.0"
-    "@ton/test-utils": "npm:^0.10.0"
-    "@ton/ton": "npm:^15.3.1"
-    "@types/node": "npm:^22.14.0"
-    axios: "npm:^1.6.7"
-    esbuild: "npm:^0.25.2"
-    eslint: "npm:^9.19.0"
-    eslint-plugin-unicorn: "npm:^56.0.1"
-    eslint-plugin-unused-imports: "npm:^4.1.4"
-    prettier: "npm:3.4.2"
-    typescript: "npm:^5.7.0"
-    typescript-eslint: "npm:^8.22.0"
-    vitest: "npm:^4.0.18"
-  languageName: unknown
-  linkType: soft
 
 "type-check@npm:^0.4.0, type-check@npm:~0.4.0":
   version: 0.4.0

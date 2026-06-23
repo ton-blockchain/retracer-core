@@ -1,6 +1,6 @@
-# TxTracer-core
+# retracer-core
 
-**TxTracer-core** is a core library for deep analysis, emulation, and tracing transactions on the TON blockchain. The library allows you to reproduce transaction execution in a local sandbox, obtain detailed reports on computation, actions, and money flow, and collect low-level information about blocks, accounts, and messages.
+**retracer-core** is a core library for deep analysis, emulation, and tracing transactions on the TON blockchain. The library allows you to reproduce transaction execution in a local sandbox, obtain detailed reports on computation, actions, and money flow, and collect low-level information about blocks, accounts, and messages.
 
 ## Features
 
@@ -13,15 +13,15 @@
 ## Installation
 
 ```bash
-yarn add txtracer-core
+yarn add @ton/retracer-core
 # or
-npm install txtracer-core
+npm install @ton/retracer-core
 ```
 
 ## Quick Start
 
 ```ts
-import {retrace} from "txtracer-core"
+import {retrace} from "@ton/retracer-core"
 
 // Example: trace a transaction by its hash
 const result = await retrace(false, "YOUR_TX_HASH")
@@ -33,7 +33,7 @@ console.log(result)
 ### Transaction Tracing
 
 ```ts
-import {retrace} from "txtracer-core"
+import {retrace} from "@ton/retracer-core"
 
 /**
  * @param testnet - true for testnet, false for mainnet
@@ -54,7 +54,7 @@ const result2 = await retraceBaseTx(testnet, {
 
 ### Helper Methods
 
-All methods are exported from `txtracer-core` and can be used independently:
+All methods are exported from `retracer-core` and can be used independently:
 
 - **findBaseTxByHash(testnet, txHash)** — Find base transaction info by hash.
 - **findRawTxByHash(testnet, baseTxInfo)** — Get full transaction details.
@@ -72,9 +72,9 @@ All methods are exported from `txtracer-core` and can be used independently:
 
 ## Types
 
-All main types (transactions, blocks, messages, tracing results) are exported from `txtracer-core` and are fully typed (see [src/types.ts](src/types.ts)).
+All main types (transactions, blocks, messages, tracing results) are exported from `retracer-core` and are fully typed (see [src/types.ts](src/types.ts)).
 
-## Projects based on txtracer-core
+## Projects based on retracer-core
 
 - [TxTracer](https://txtracer.ton.org) — Web application for tracing and debugging any TON blockchain transactions
 
@@ -85,4 +85,4 @@ MIT © TON Studio, TON Core
 ## Links
 
 - [TON Documentation](https://ton.org/docs/)
-- [Source code & issue tracker](https://github.com/ton-blockchain/TxTracer-core)
+- [Source code & issue tracker](https://github.com/ton-blockchain/retracer-core)
