@@ -28,6 +28,17 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Check package version
+        # language=Bash
+        run: |
+          package_version="$(jq -r .version package.json)"
+          tag_version="${GITHUB_REF_NAME#v}"
+
+          if [ "$tag_version" != "$package_version" ]; then
+            echo "::error title=Version mismatch::package.json(version) '${package_version}' does not match tag '${tag_version}'"
+            exit 1
+          fi
+
       - name: Enable Corepack
         run: corepack enable
 
@@ -60,6 +71,7 @@ jobs:
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
+        # language=Bash
         run: |
           gh release create "$GITHUB_REF_NAME" \
             --repo "$GITHUB_REPOSITORY" \
