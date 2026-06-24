@@ -65,7 +65,7 @@ jobs:
     if: github.repository == 'ton-blockchain/retracer-core'
 
     permissions:
-      contents: write
+      contents: write # required to create the GitHub Release for the published tag.
 
     steps:
       - name: Create GitHub Release
