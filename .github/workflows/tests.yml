@@ -12,7 +12,7 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
-permissions: { }
+permissions: {}
 
 jobs:
   tests:
@@ -28,16 +28,23 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+      - name: Enable Corepack
+        run: corepack enable
+
+      - name: Setup Node.js 22.x
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
-          bun-version: '1.3.14'
+          node-version: 22.x
+          cache: "yarn"
 
       - name: Install dependencies
-        run: bun install --frozen-lockfile
+        run: yarn install --immutable --check-cache --check-resolutions
+
+      - name: Install dependencies
+        run: yarn install --frozen-lockfile
 
       - name: Build
-        run: bun run build
+        run: yarn run build
 
       - name: Run tests
-        run: bun run test
+        run: yarn run test
