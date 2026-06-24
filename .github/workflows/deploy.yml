@@ -3,7 +3,7 @@ name: Publish to NPM
 on:
   push:
     tags:
-      - "[0-9]+.[0-9]+.[0-9]+"
+      - "v+([0-9]).+([0-9]).+([0-9])"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -28,6 +28,17 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Check package version
+        # language=Bash
+        run: |
+          package_version="$(jq -r .version package.json)"
+          tag_version="${GITHUB_REF_NAME#v}"
+
+          if [ "$tag_version" != "$package_version" ]; then
+            echo "::error title=Version mismatch::package.json(version) '${package_version}' does not match tag '${tag_version}'"
+            exit 1
+          fi
+
       - name: Enable Corepack
         run: corepack enable
 
@@ -46,3 +57,24 @@ jobs:
 
       - name: Publish
         run: npm publish --access public
+
+  release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    needs: publish
+    if: github.repository == 'ton-blockchain/retracer-core'
+
+    permissions:
+      contents: write # required to create the GitHub Release for the published tag.
+
+    steps:
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        # language=Bash
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes \
+            --verify-tag
