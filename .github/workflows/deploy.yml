@@ -3,7 +3,7 @@ name: Publish to NPM
 on:
   push:
     tags:
-      - "[0-9]+.[0-9]+.[0-9]+"
+      - "v+([0-9]).+([0-9]).+([0-9])"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -46,3 +46,23 @@ jobs:
 
       - name: Publish
         run: npm publish --access public
+
+  release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    needs: publish
+    if: github.repository == 'ton-blockchain/retracer-core'
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes \
+            --verify-tag
