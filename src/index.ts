@@ -1,5 +1,6 @@
 export * from "./methods"
 export * from "./networks"
 export * from "./runner"
+export * from "./sourceTrace"
 export type * from "./types"
 export * from "./utils"

@@ -4,7 +4,8 @@
     "description": "Core TxTracer library for collecting transaction information",
     "main": "dist/index.js",
     "scripts": {
-        "build": "tsc --declaration",
+        "build": "yarn pack:wasm && tsc --declaration",
+        "pack:wasm": "node scripts/pack-wasm-assets.mjs",
         "lint": "eslint --cache .",
         "test": "vitest run",
         "fmt": "prettier --write -l --cache .",

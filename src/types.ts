@@ -21,6 +21,129 @@ export interface RetraceNetworkConfig {
 
 export interface RetraceOptions {
     additionalLibs?: [bigint, Cell][]
+    /**
+     * Optional Tolk compiler source map. Provide this to include source-level
+     * steps in the retrace result.
+     */
+    sourceMap?: TolkSourceMapData
+}
+
+/**
+ * Tolk compiler output required to map TVM execution back to source locations.
+ */
+export interface TolkSourceMapData {
+    /**
+     * Base64-encoded code BoC produced by the same compilation as the source map.
+     * Its hash must match the transaction account code hash.
+     */
+    codeBoc64: string
+    /**
+     * Compiler `symbolTypesJson` payload used to decode source locations and
+     * local variable types.
+     */
+    symbolTypesJson: unknown
+    /**
+     * Compiler `debugMarksJson` payload with source ranges for debug mark ids.
+     */
+    debugMarksJson: readonly unknown[]
+    /**
+     * Compiler `debugMarksBase64` payload with debug mark positions in bytecode.
+     */
+    debugMarksBase64: string
+}
+
+/**
+ * Source trace request accepted by `buildSourceTrace`.
+ */
+export interface BuildSourceTraceRequest {
+    /**
+     * VM logs from the emulated transaction.
+     */
+    vmLogs: string
+    /**
+     * Expected account code hash in hex. Used to verify `compiled.codeBoc64`
+     * belongs to the executed code.
+     */
+    codeHash: string
+    /**
+     * Optional runtime context that is not present in raw VM logs but is useful
+     * for source-level variables.
+     */
+    context?: SourceTraceContext
+    /**
+     * Compiled Tolk source-map payload.
+     */
+    compiled: TolkSourceMapData
+}
+
+export interface SourceTraceContext {
+    /**
+     * Incoming message context for the traced transaction.
+     */
+    inMsg?: SourceTraceInMessageContext
+}
+
+export interface SourceTraceInMessageContext {
+    /**
+     * Sender address string injected as `in.senderAddress` when tracing
+     * `onInternalMessage`.
+     */
+    senderAddress?: string
+}
+
+export interface SourceTraceResponse {
+    codeHash: string
+    files: readonly SourceTraceFileInfo[]
+    steps: readonly SourceTraceStep[]
+    truncated: boolean
+}
+
+export interface SourceTraceFileInfo {
+    path: string
+}
+
+export interface SourceTraceStep {
+    index: number
+    location: SourceTraceLocation
+    instruction: string | null
+    vmPosition: SourceTraceVmPosition | null
+    locals: readonly SourceTraceVariable[]
+    stack: readonly string[]
+    callStack: readonly SourceTraceFrame[]
+    exception: SourceTraceException | null
+}
+
+export interface SourceTraceLocation {
+    file: string
+    line: number
+    column: number
+    endLine: number
+    endColumn: number
+}
+
+export interface SourceTraceVmPosition {
+    cellHash: string
+    offset: number
+}
+
+export interface SourceTraceFrame {
+    functionName: string
+    location: SourceTraceLocation | null
+    isInlined: boolean
+    isBuiltin: boolean
+}
+
+export interface SourceTraceVariable {
+    name: string
+    value: string
+    type: string | null
+    children: readonly SourceTraceVariable[]
+}
+
+export interface SourceTraceException {
+    errno: string
+    symbolicName: string | null
+    isUncaught: boolean
 }
 
 // TonCenter v3 API response for get transactions
@@ -364,6 +487,10 @@ export interface TraceResult {
      * Information about emulated transaction
      */
     emulatedTx: TraceEmulatedTx
+    /**
+     * Source-level Tolk trace, present only when retrace is called with `sourceMap`.
+     */
+    sourceTrace?: SourceTraceResponse
     emulatorVersion: {
         commitHash: string
         commitDate: string
