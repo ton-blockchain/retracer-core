@@ -1,6 +1,6 @@
 {
     "name": "@ton/retracer-core",
-    "version": "0.9.1",
+    "version": "0.10.0",
     "description": "Core TxTracer library for collecting transaction information",
     "main": "dist/index.js",
     "scripts": {
