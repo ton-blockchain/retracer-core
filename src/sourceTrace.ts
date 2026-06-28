@@ -1,7 +1,7 @@
 import type {
     BuildSourceTraceRequest,
-    RetraceSourceTraceOptions,
     SourceTraceResponse,
+    TolkSourceMapData,
     TraceResult,
 } from "./types"
 import {ActonSourceTraceWasmBase64} from "./generated/actonSourceTraceWasm"
@@ -26,7 +26,7 @@ export async function buildSourceTrace(
 
 export async function buildSourceTraceForTraceResult(
     result: TraceResult,
-    options: RetraceSourceTraceOptions,
+    sourceMap: TolkSourceMapData,
 ): Promise<SourceTraceResponse> {
     if (!result.codeCell) {
         throw new Error("Source-level retrace requires executable code")
@@ -39,7 +39,6 @@ export async function buildSourceTraceForTraceResult(
     return buildSourceTrace({
         vmLogs: result.emulatedTx.vmLogs,
         codeHash: result.codeCell.hash().toString("hex"),
-        sourceBundle: options.sourceBundle,
         context:
             senderAddress === undefined
                 ? undefined
@@ -48,7 +47,7 @@ export async function buildSourceTraceForTraceResult(
                           senderAddress,
                       },
                   },
-        compiled: options.sourceMap,
+        compiled: sourceMap,
     })
 }
 

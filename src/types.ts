@@ -22,28 +22,10 @@ export interface RetraceNetworkConfig {
 export interface RetraceOptions {
     additionalLibs?: [bigint, Cell][]
     /**
-     * Optional source-level trace input. Provide this when the contract source
-     * was compiled with Tolk debug marks, and you want to retrace steps mapped back
-     * to source files.
+     * Optional Tolk compiler source map. Provide this to include source-level
+     * steps in the retrace result.
      */
-    sourceTrace?: RetraceSourceTraceOptions
-}
-
-/**
- * Source-level trace data for the high-level `retrace` helper.
- *
- * Use this when you already have Tolk source-map data for the contract code
- * being retraced.
- */
-export interface RetraceSourceTraceOptions {
-    /**
-     * Source files that were used for compilation.
-     */
-    sourceBundle: SourceTraceBundleLayout
-    /**
-     * Tolk compilation output with symbol types and debug marks enabled.
-     */
-    sourceMap: TolkSourceMapData
+    sourceMap?: TolkSourceMapData
 }
 
 /**
@@ -71,22 +53,6 @@ export interface TolkSourceMapData {
 }
 
 /**
- * Source files that participated in compilation.
- */
-export interface SourceTraceBundleLayout {
-    /**
-     * Entrypoint path used for compilation, normalized the same way as paths in
-     * `files` and in the compiler source map.
-     */
-    entrypoint: string
-    /**
-     * Source file paths. Use the same path format that appears in the compiler
-     * source map.
-     */
-    files: readonly string[]
-}
-
-/**
  * Source trace request accepted by `buildSourceTrace`.
  */
 export interface BuildSourceTraceRequest {
@@ -99,10 +65,6 @@ export interface BuildSourceTraceRequest {
      * belongs to the executed code.
      */
     codeHash: string
-    /**
-     * Source files that were used for compilation.
-     */
-    sourceBundle: SourceTraceBundleLayout
     /**
      * Optional runtime context that is not present in raw VM logs but is useful
      * for source-level variables.
@@ -131,7 +93,6 @@ export interface SourceTraceInMessageContext {
 
 export interface SourceTraceResponse {
     codeHash: string
-    entrypoint: string
     files: readonly SourceTraceFileInfo[]
     steps: readonly SourceTraceStep[]
     truncated: boolean
@@ -139,7 +100,6 @@ export interface SourceTraceResponse {
 
 export interface SourceTraceFileInfo {
     path: string
-    isEntrypoint: boolean
 }
 
 export interface SourceTraceStep {
@@ -528,7 +488,7 @@ export interface TraceResult {
      */
     emulatedTx: TraceEmulatedTx
     /**
-     * Source-level Tolk trace, present only when retrace is called with sourceTrace options.
+     * Source-level Tolk trace, present only when retrace is called with `sourceMap`.
      */
     sourceTrace?: SourceTraceResponse
     emulatorVersion: {

@@ -529,7 +529,7 @@ async function __wbg_init(module_or_path) {
     }
 
     if (typeof module_or_path === 'undefined') {
-        throw new Error('acton_source_trace_wasm requires embedded wasm bytes');
+        module_or_path = new URL('acton_source_trace_wasm_bg.wasm', import.meta.url);
     }
     const imports = __wbg_get_imports();
 

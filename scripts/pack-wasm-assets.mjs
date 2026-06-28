@@ -7,7 +7,10 @@ const wasmGluePath = path.join(rootDir, "wasm", "acton_source_trace_wasm.mjs")
 const generatedDir = path.join(rootDir, "src", "generated")
 const glueOutputPath = path.join(generatedDir, "actonSourceTraceWasmGlue.ts")
 
-const glue = readFileSync(wasmGluePath, "utf8")
+const glue = readFileSync(wasmGluePath, "utf8").replace(
+    "        module_or_path = new URL('acton_source_trace_wasm_bg.wasm', import.meta.url);\n",
+    "        throw new Error('acton_source_trace_wasm requires embedded wasm bytes');\n",
+)
 
 rmSync(path.join(rootDir, "dist", "wasm"), {recursive: true, force: true})
 mkdirSync(generatedDir, {recursive: true})

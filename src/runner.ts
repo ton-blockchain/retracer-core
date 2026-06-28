@@ -67,7 +67,7 @@ export const retrace = async (
     if (baseTx === undefined) {
         throw new Error("Cannot find transaction info")
     }
-    const result = await retraceBaseTx(network, baseTx, additionalLibs, options.sourceTrace)
+    const result = await retraceBaseTx(network, baseTx, additionalLibs, options.sourceMap)
     if (result.emulatedTx.computeInfo === "skipped") {
         return result
     }
@@ -118,7 +118,7 @@ export const retrace = async (
                 const additionalLib: [bigint, Cell] = [BigInt(`0x${libHashHex}`), actualCode]
                 return retrace(network, txLink, {
                     additionalLibs: [...additionalLibs, additionalLib],
-                    sourceTrace: options.sourceTrace,
+                    sourceMap: options.sourceMap,
                 })
             }
         }
@@ -138,7 +138,7 @@ export const retraceBaseTx = async (
     network: RetraceNetworkConfig,
     baseTx: BaseTxInfo,
     additionalLibs: [bigint, Cell][] = [],
-    sourceTraceOptions?: RetraceOptions["sourceTrace"],
+    sourceMap?: RetraceOptions["sourceMap"],
 ): Promise<TraceResult> => {
     const tx = await findRawTxByHash(network, baseTx)
     const shard = tx.block
@@ -331,10 +331,10 @@ export const retraceBaseTx = async (
         emulatorVersion,
     }
 
-    if (sourceTraceOptions) {
+    if (sourceMap) {
         return {
             ...result,
-            sourceTrace: await buildSourceTraceForTraceResult(result, sourceTraceOptions),
+            sourceTrace: await buildSourceTraceForTraceResult(result, sourceMap),
         }
     }
 
