@@ -17,7 +17,16 @@ export default tseslint.config(
 
     // add files and folders to be ignored
     {
-        ignores: ["**/*.js", "eslint.config.mjs", ".github/*", ".yarn/*", "src/utils.ts", "dist/*"],
+        ignores: [
+            "**/*.js",
+            "eslint.config.mjs",
+            ".github/*",
+            ".yarn/*",
+            "src/generated/*",
+            "src/utils.ts",
+            "dist/*",
+            "wasm/*.mjs",
+        ],
     },
 
     tseslint.configs.all,
@@ -26,6 +35,7 @@ export default tseslint.config(
     {
         languageOptions: {
             parserOptions: {
+                extraFileExtensions: [".mjs"],
                 project: ["tsconfig.eslint.json"],
                 tsconfigRootDir: __dirname,
             },
@@ -96,6 +106,13 @@ export default tseslint.config(
             "unicorn/prefer-node-protocol": "off", // we need it as "buffer" for fallback
 
             "@/eqeqeq": "error",
+        },
+    },
+
+    {
+        files: ["scripts/**/*.mjs"],
+        rules: {
+            "@typescript-eslint/typedef": "off",
         },
     },
 )

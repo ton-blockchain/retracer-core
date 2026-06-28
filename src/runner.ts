@@ -22,6 +22,7 @@ import {Buffer} from "buffer"
 import {beginCell, Cell, loadTransaction, storeTransaction, Transaction} from "@ton/core"
 import {PrevBlocksInfo} from "@ton/sandbox/dist/executor/Executor"
 import {logs} from "ton-assembly"
+import {buildSourceTraceForTraceResult} from "./sourceTrace"
 
 /**
  * Fully reproduce (re‑trace) a TON transaction inside a local TON Sandbox
@@ -66,7 +67,7 @@ export const retrace = async (
     if (baseTx === undefined) {
         throw new Error("Cannot find transaction info")
     }
-    const result = await retraceBaseTx(network, baseTx, additionalLibs)
+    const result = await retraceBaseTx(network, baseTx, additionalLibs, options.sourceTrace)
     if (result.emulatedTx.computeInfo === "skipped") {
         return result
     }
@@ -117,6 +118,7 @@ export const retrace = async (
                 const additionalLib: [bigint, Cell] = [BigInt(`0x${libHashHex}`), actualCode]
                 return retrace(network, txLink, {
                     additionalLibs: [...additionalLibs, additionalLib],
+                    sourceTrace: options.sourceTrace,
                 })
             }
         }
@@ -136,6 +138,7 @@ export const retraceBaseTx = async (
     network: RetraceNetworkConfig,
     baseTx: BaseTxInfo,
     additionalLibs: [bigint, Cell][] = [],
+    sourceTraceOptions?: RetraceOptions["sourceTrace"],
 ): Promise<TraceResult> => {
     const tx = await findRawTxByHash(network, baseTx)
     const shard = tx.block
@@ -300,7 +303,7 @@ export const retraceBaseTx = async (
 
     const opcode = txOpcode(ourTx)
 
-    return {
+    const result: TraceResult = {
         stateUpdateHashOk,
         codeCell: loadedCode ?? codeCell,
         originalCodeCell: codeCell,
@@ -327,6 +330,15 @@ export const retraceBaseTx = async (
         },
         emulatorVersion,
     }
+
+    if (sourceTraceOptions) {
+        return {
+            ...result,
+            sourceTrace: await buildSourceTraceForTraceResult(result, sourceTraceOptions),
+        }
+    }
+
+    return result
 }
 
 function txOpcode(transaction: Transaction): number | undefined {
