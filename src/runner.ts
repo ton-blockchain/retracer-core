@@ -21,7 +21,7 @@ import {
 import {Buffer} from "buffer"
 import {beginCell, Cell, loadTransaction, storeTransaction, Transaction} from "@ton/core"
 import {PrevBlocksInfo} from "@ton/sandbox/dist/executor/Executor"
-import {logs} from "ton-assembly"
+import {logs} from "@ton/tasm"
 import {buildSourceTraceForTraceResult} from "./sourceTrace"
 
 /**

@@ -576,7 +576,8 @@ __metadata:
     "@ton-community/func-js": "npm:^0.10.0"
     "@ton/core": "npm:^0.63.1"
     "@ton/crypto": "npm:^3.3.0"
-    "@ton/sandbox": "npm:^0.43.0"
+    "@ton/sandbox": "npm:^0.44.0"
+    "@ton/tasm": "npm:^0.6.1"
     "@ton/test-utils": "npm:^0.10.0"
     "@types/node": "npm:^22.14.0"
     esbuild: "npm:^0.25.2"
@@ -590,13 +591,13 @@ __metadata:
   languageName: unknown
   linkType: soft
 
-"@ton/sandbox@npm:^0.43.0":
-  version: 0.43.0
-  resolution: "@ton/sandbox@npm:0.43.0"
+"@ton/sandbox@npm:^0.44.0":
+  version: 0.44.0
+  resolution: "@ton/sandbox@npm:0.44.0"
   dependencies:
+    "@ton/tasm": "npm:0.6.1"
     chalk: "npm:^4.1.2"
     table: "npm:^6.9.0"
-    ton-assembly: "npm:0.6.1"
   peerDependencies:
     "@ton-community/func-js": ">=0.10.0"
     "@ton/core": ">=0.61.0"
@@ -608,7 +609,47 @@ __metadata:
       optional: true
     jest:
       optional: true
-  checksum: 10c0/42939be64c17f8d8ad0623fb19c403c95f40c5d16e2153f58e439eafb7101bbdb3484631035a2bed26cbb9490584a5d7d3395acb8ce218606bec9611797ae6fc
+  checksum: 10c0/3dea1482b49f75425fcd2925dcf4a5657228828e84b0f0e33598a6e5a9571fbb0a1bd91abaff63eabd462925404762a3d953450b92b583a150ded2607c1b2e3f
+  languageName: node
+  linkType: hard
+
+"@ton/tasm@npm:0.6.1":
+  version: 0.6.1
+  resolution: "@ton/tasm@npm:0.6.1"
+  dependencies:
+    "@tonstudio/parser-runtime": "npm:^0.0.1"
+    cac: "npm:^6.7.14"
+    ton-source-map: "npm:^0.2.2"
+  peerDependencies:
+    "@ton/core": ">=0.61.0"
+  peerDependenciesMeta:
+    "@ton/core":
+      optional: false
+  bin:
+    tasm: dist/cli/assembler.js
+    tdisasm: dist/cli/disassembler.js
+    tfift: dist/cli/fift-compiler.js
+  checksum: 10c0/12f5846048935325dfa3532d6297d08daf755f9938de9ab1a7da2348b6839d65e1a40cee1d2512d6e8b567f9f1640d81a63eb327aeccc9c726447f6c93b0cb79
+  languageName: node
+  linkType: hard
+
+"@ton/tasm@npm:^0.6.1":
+  version: 0.6.2
+  resolution: "@ton/tasm@npm:0.6.2"
+  dependencies:
+    "@tonstudio/parser-runtime": "npm:^0.0.1"
+    cac: "npm:^6.7.14"
+    ton-source-map: "npm:^0.2.2"
+  peerDependencies:
+    "@ton/core": ">=0.61.0"
+  peerDependenciesMeta:
+    "@ton/core":
+      optional: false
+  bin:
+    tasm: dist/cli/assembler.js
+    tdisasm: dist/cli/disassembler.js
+    tfift: dist/cli/fift-compiler.js
+  checksum: 10c0/0dd184c3864e0b505fcdcfd65b75324dc766936bf4a00a33fdf470986fbc2366b29ad6522155f7e9bde6e821c35e64ccf5e257737a83eba5b24c493b8d12095a
   languageName: node
   linkType: hard
 
@@ -2735,26 +2776,6 @@ __metadata:
   version: 3.1.0
   resolution: "tinyrainbow@npm:3.1.0"
   checksum: 10c0/f11cf387a26c5c9255bec141a90ac511b26172981b10c3e50053bc6700ea7d2336edcc4a3a21dbb8412fe7c013477d2ba4d7e4877800f3f8107be5105aad6511
-  languageName: node
-  linkType: hard
-
-"ton-assembly@npm:0.6.1":
-  version: 0.6.1
-  resolution: "ton-assembly@npm:0.6.1"
-  dependencies:
-    "@tonstudio/parser-runtime": "npm:^0.0.1"
-    cac: "npm:^6.7.14"
-    ton-source-map: "npm:^0.2.2"
-  peerDependencies:
-    "@ton/core": ">=0.61.0"
-  peerDependenciesMeta:
-    "@ton/core":
-      optional: false
-  bin:
-    tasm: dist/cli/assembler.js
-    tdisasm: dist/cli/disassembler.js
-    tfift: dist/cli/fift-compiler.js
-  checksum: 10c0/0248810f2b3e7a31d3617996d0f0b0ea973e0b288af0985fdc8e1c9784638dbc4d9876dd82f381ed838753f2d8c0c5273fcae93d422c4f9da6c09f88f0f37b38
   languageName: node
   linkType: hard
 
