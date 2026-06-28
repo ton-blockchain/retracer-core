@@ -29,7 +29,7 @@ import {
     PrevBlocksInfo,
     TickOrTock,
 } from "@ton/sandbox/dist/executor/Executor"
-import {runtime} from "ton-assembly"
+import {runtime} from "@ton/tasm"
 import {
     toncenterAddressParam,
     toncenterHashToBuffer,
