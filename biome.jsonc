@@ -38,6 +38,7 @@
   },
   "linter": {
     "enabled": true,
+    "includes": ["**", "!src/generated/**", "!wasm/*.mjs"],
     "rules": {
       "preset": "recommended"
     }
