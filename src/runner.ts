@@ -1,6 +1,9 @@
-import {RetraceNetworkConfig, RetraceOptions, TraceResult} from "./types"
+import {beginCell, Cell, loadTransaction, storeTransaction, type Transaction} from "@ton/core"
+import type {PrevBlocksInfo} from "@ton/sandbox/dist/executor/Executor"
+import {logs} from "@ton/tasm"
+import {Buffer} from "buffer"
 import {
-  BaseTxInfo,
+  type BaseTxInfo,
   collectUsedLibraries,
   computeFinalData,
   detectPrevBlocksUsage,
@@ -18,11 +21,8 @@ import {
   prepareEmulator,
   shardAccountToBase64,
 } from "./methods"
-import {Buffer} from "buffer"
-import {beginCell, Cell, loadTransaction, storeTransaction, Transaction} from "@ton/core"
-import {PrevBlocksInfo} from "@ton/sandbox/dist/executor/Executor"
-import {logs} from "@ton/tasm"
 import {buildSourceTraceForTraceResult} from "./sourceTrace"
+import type {RetraceNetworkConfig, RetraceOptions, TraceResult} from "./types"
 
 /**
  * Fully reproduce (re‑trace) a TON transaction inside a local TON Sandbox
@@ -345,7 +345,7 @@ function txOpcode(transaction: Transaction): number | undefined {
   const inMessage = transaction.inMessage
   const isBounced = inMessage?.info.type === "internal" ? inMessage.info.bounced : false
 
-  let opcode: number | undefined = undefined
+  let opcode: number | undefined
   const slice = inMessage?.body.asSlice()
   if (slice) {
     if (isBounced) {

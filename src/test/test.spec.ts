@@ -1,5 +1,4 @@
 import {describe, expect, it} from "vitest"
-import {retrace, retraceBaseTx} from "../runner"
 import {findBaseTxByHash} from "../methods"
 import {
   RETRACE_MAINNET_NETWORK,
@@ -8,6 +7,7 @@ import {
   toncenterV3HashParam,
   withRetraceNetworkApiKey,
 } from "../networks"
+import {retrace, retraceBaseTx} from "../runner"
 import type {TraceResult} from "../types"
 
 const DEFAULT_TIMEOUT = 100_000

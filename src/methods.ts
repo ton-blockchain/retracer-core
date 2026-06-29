@@ -6,28 +6,18 @@ import {
   loadOutList,
   loadShardAccount,
   loadTransaction,
-  ShardAccount,
+  type ShardAccount,
   storeMessage,
   storeShardAccount,
-  Transaction,
+  type Transaction,
 } from "@ton/core"
 import {
-  Block,
-  BlockRef,
-  BlocksResponse,
-  ComputeInfo,
-  RawTransaction,
-  RetraceNetworkConfig,
-  TraceMoneyResult,
-  TransactionData,
-} from "./types"
-import {
-  BlockId,
-  EmulationResult,
-  EmulationResultSuccess,
+  type BlockId,
+  type EmulationResult,
+  type EmulationResultSuccess,
   Executor,
-  PrevBlocksInfo,
-  TickOrTock,
+  type PrevBlocksInfo,
+  type TickOrTock,
 } from "@ton/sandbox/dist/executor/Executor"
 import {runtime} from "@ton/tasm"
 import {
@@ -40,6 +30,16 @@ import {
   toncenterV3HashParam,
   toncenterV3ShardParam,
 } from "./networks"
+import type {
+  Block,
+  BlockRef,
+  BlocksResponse,
+  ComputeInfo,
+  RawTransaction,
+  RetraceNetworkConfig,
+  TraceMoneyResult,
+  TransactionData,
+} from "./types"
 
 /**
  * Minimal “handle” for locating a transaction on the TON blockchain.
@@ -579,7 +579,7 @@ export const collectUsedLibraries = async (
   }
 
   // if current contract code is exotic cell, we want to return actual code to the user
-  let loadedCellCode: Cell | undefined = undefined
+  let loadedCellCode: Cell | undefined
 
   // 1. scan the *current* contract code for exotic‑library links
   const state = account.account?.storage.state
@@ -774,9 +774,9 @@ export const computeFinalData = (
 
   const emulatedTx = loadTransaction(Cell.fromBase64(res.transaction).asSlice())
 
-  let src: Address | undefined = undefined
-  let dest: Address | undefined = undefined
-  let amount: bigint | undefined = undefined
+  let src: Address | undefined
+  let dest: Address | undefined
+  let amount: bigint | undefined
 
   if (emulatedTx.inMessage) {
     const msgSrc = emulatedTx.inMessage.info.src ?? undefined
