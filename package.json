@@ -2,64 +2,58 @@
   "name": "@ton/retracer-core",
   "version": "0.10.0",
   "description": "Core TxTracer library for collecting transaction information",
-  "main": "dist/index.js",
-  "scripts": {
-    "build": "yarn pack:wasm && tsc --declaration",
-    "pack:wasm": "node scripts/pack-wasm-assets.mjs",
-    "lint": "eslint --cache .",
-    "test": "vitest run",
-    "fmt": "prettier --write -l --cache .",
-    "fmt:check": "prettier --check --cache .",
-    "precommit": "yarn fmt && yarn lint --fix && yarn build"
-  },
   "keywords": [
     "ton",
     "tact",
     "blockchain",
     "tracing"
   ],
+  "homepage": "https://github.com/ton-blockchain/retracer-core#readme",
+  "bugs": {
+    "url": "https://github.com/ton-blockchain/retracer-core/issues"
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/ton-blockchain/retracer-core.git"
   },
-  "author": "TON Core",
   "license": "MIT",
-  "bugs": {
-    "url": "https://github.com/ton-blockchain/retracer-core/issues"
+  "author": {
+    "name": "TON Core"
   },
-  "homepage": "https://github.com/ton-blockchain/retracer-core#readme",
+  "maintainers": [
+    {
+      "name": "TON Core"
+    }
+  ],
+  "main": "dist/index.js",
   "files": [
     "dist",
     "!dist/test"
   ],
+  "scripts": {
+    "build": "rimraf ./dist && bun run pack:wasm && tsc --declaration",
+    "fmt": "biome format --write .",
+    "fmt:check": "biome format .",
+    "lint": "biome check --formatter-enabled=false .",
+    "lint:fix": "biome lint --formatter-enabled=false --write .",
+    "pack:wasm": "node scripts/pack-wasm-assets.mjs",
+    "test": "vitest run"
+  },
   "dependencies": {
     "@ton/core": "^0.63.1",
     "@ton/sandbox": "^0.44.0",
     "@ton/tasm": "^0.6.1"
   },
   "devDependencies": {
+    "@biomejs/biome": "^2.5.0",
     "@ton-community/func-js": "^0.10.0",
     "@ton/crypto": "^3.3.0",
     "@ton/test-utils": "^0.10.0",
     "@types/node": "^22.14.0",
     "esbuild": "^0.25.2",
-    "eslint": "^9.39.0",
-    "eslint-plugin-unicorn": "^56.0.1",
-    "eslint-plugin-unused-imports": "^4.1.4",
-    "prettier": "3.4.2",
+    "rimraf": "^6.1.3",
     "typescript": "^5.7.0",
-    "typescript-eslint": "^8.29.1",
     "vitest": "^4.1.0"
   },
-  "packageManager": "yarn@4.12.0+sha512.f45ab632439a67f8bc759bf32ead036a1f413287b9042726b7cc4818b7b49e14e9423ba49b18f9e06ea4941c1ad062385b1d8760a8d5091a1a31e5f6219afca8",
-  "prettier": {
-    "arrowParens": "avoid",
-    "bracketSpacing": false,
-    "printWidth": 100,
-    "semi": false,
-    "singleQuote": false,
-    "tabWidth": 2,
-    "trailingComma": "all",
-    "useTabs": false
-  }
+  "packageManager": "bun@1.3.5"
 }
