@@ -1,11 +1,11 @@
+import {ActonSourceTraceWasmBase64} from "./generated/actonSourceTraceWasm"
+import initSourceTraceWasm, {build_source_trace} from "./generated/actonSourceTraceWasmGlue"
 import type {
   BuildSourceTraceRequest,
   SourceTraceResponse,
   TolkSourceMapData,
   TraceResult,
 } from "./types"
-import {ActonSourceTraceWasmBase64} from "./generated/actonSourceTraceWasm"
-import initSourceTraceWasm, {build_source_trace} from "./generated/actonSourceTraceWasmGlue"
 
 let initSourceTraceWasmPromise: Promise<unknown> | undefined
 let defaultWasmBytes: Uint8Array | undefined

@@ -9,7 +9,7 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
-permissions: {}
+permissions: { }
 
 jobs:
   publish:
@@ -39,8 +39,16 @@ jobs:
             exit 1
           fi
 
-      - name: Enable Corepack
-        run: corepack enable
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          no-cache: true
+
+      - name: Install dependencies
+        run: bun ci
+
+      - name: Build
+        run: bun run build
 
       - name: Setup Node
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
@@ -48,12 +56,6 @@ jobs:
           node-version: "24"
           registry-url: "https://registry.npmjs.org"
           package-manager-cache: false
-
-      - name: Install dependencies
-        run: yarn install --immutable --check-cache --check-resolutions
-
-      - name: Build
-        run: yarn run build
 
       - name: Publish
         run: npm publish --access public

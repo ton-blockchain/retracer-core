@@ -10,7 +10,3 @@ trim_trailing_whitespace = true
 
 [*.{js,ts}]
 max_line_length = 100
-
-[*.tolk]
-indent_size = 4
-max_line_length = 100

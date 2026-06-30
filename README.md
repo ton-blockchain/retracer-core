@@ -98,7 +98,7 @@ All main types (transactions, blocks, messages, tracing results) are exported fr
 
 ## License
 
-MIT © TON Studio, TON Core
+MIT © TON Core, TON Studio
 
 ## Links
 
