@@ -482,21 +482,12 @@ export const getBlockAccount = async (
     // back to the current block's state as best approximation.
     // stateUpdateHashOk will be false for genesis transactions.
     const seqno = mcSeqno > 1 ? mcSeqno - 1 : mcSeqno
-
-    return getShardAccountAtBlock(network, address, seqno)
-}
-
-export const getShardAccountAtBlock = async (
-    network: RetraceNetworkConfig,
-    address: Address,
-    mcSeqno: number,
-): Promise<ShardAccount> => {
     const {result} = await toncenterV2Get<GetShardAccountCellResponse>(
         network,
         "getShardAccountCell",
         {
             address: toncenterAddressParam(network, address),
-            seqno: mcSeqno,
+            seqno,
         },
     )
     if (typeof result !== "object" || typeof result.bytes !== "string") {
@@ -636,6 +627,7 @@ export const collectUsedLibraries = async (
  * @param prevTxsInBlock      Transactions to replay (oldest → newest).
  * @param emulate             Helper that runs a single transaction.
  * @param shardAccountBase64  Starting shard‑account (base64).
+ * @param onEmulated          Optional callback invoked after each successful replay.
  * @returns                   `{ prevBalance, shardAccountBase64 }`
  *                            after applying all txs.
  */
@@ -689,37 +681,25 @@ export const prepareEmulator = async (
     libs: Cell | undefined,
     randSeed: Buffer,
     prevBlocksInfo?: PrevBlocksInfo,
-    options: {ignoreChksig?: boolean} = {},
 ) => {
     const executor = await Executor.create()
     const emulatorVersion = executor.getVersion()
-    const ignoreChksig = options.ignoreChksig ?? false
 
     async function emulate(tx: Transaction, shardAccountBase64: string): Promise<EmulationResult> {
         const inMsg = tx.inMessage
         if (!inMsg) throw new Error("No in_message was found in transaction")
         const messageCell =
             extractRawInMessageCell(tx) ?? beginCell().store(storeMessage(inMsg)).endCell()
-
-        return emulateMessage(messageCell, shardAccountBase64, tx.now, tx.lt)
-    }
-
-    async function emulateMessage(
-        message: Cell,
-        shardAccountBase64: string,
-        now: number,
-        lt: bigint,
-    ): Promise<EmulationResult> {
         return executor.runTransaction({
             config: blockConfig,
             libs: libs ?? null,
             verbosity: "full_location_stack_verbose",
             shardAccount: shardAccountBase64,
-            message,
-            now,
-            lt,
+            message: messageCell,
+            now: tx.now,
+            lt: tx.lt,
             randomSeed: randSeed,
-            ignoreChksig,
+            ignoreChksig: false,
             debugEnabled: true,
             prevBlocksInfo,
         })
@@ -739,13 +719,13 @@ export const prepareEmulator = async (
             now: tx.now,
             lt: tx.lt,
             randomSeed: randSeed,
-            ignoreChksig,
+            ignoreChksig: false,
             debugEnabled: true,
             prevBlocksInfo,
         })
     }
 
-    return {emulatorVersion, emulate, emulateTickTock, emulateMessage}
+    return {emulatorVersion, emulate, emulateTickTock}
 }
 
 /**

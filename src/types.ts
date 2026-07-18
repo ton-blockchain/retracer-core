@@ -32,100 +32,6 @@ export interface RetraceOptions {
     sourceMap?: TolkSourceMapData
 }
 
-export interface EmulateRawMessageOptions extends RetraceOptions {
-    /**
-     * Masterchain block seqno whose resulting account state and config should be used.
-     * When omitted, the latest masterchain block is used.
-     */
-    mcSeqno?: number
-    /**
-     * Override transaction unix timestamp. Defaults to the selected block generation time.
-     */
-    now?: number
-    /**
-     * Override transaction logical time. Defaults to selected block end_lt + 1.
-     */
-    lt?: bigint
-    /**
-     * Ask TVM to ignore CHKSIG/CHKSIGNU signature checks during emulation.
-     */
-    ignoreChksig?: boolean
-    /**
-     * Maximum amount of transactions to emulate from the message cascade.
-     * Defaults to 128.
-     */
-    maxTransactions?: number
-    /**
-     * Optional starting account states keyed by account address. When provided,
-     * the emulation starts from this shard account instead of loading the
-     * selected block state for that address.
-     */
-    accountStateOverrides?: Record<string, EmulateRawMessageAccountStateOverride>
-}
-
-export interface EmulateRawMessageAccountStateOverride {
-    /**
-     * Full ShardAccount BoC encoded as hex or base64. When provided, structured
-     * fields below are applied on top of this account snapshot.
-     */
-    shardAccountBoc?: string
-    /**
-     * Override account balance in nanotons. When omitted, the selected block
-     * state balance is preserved.
-     */
-    balance?: bigint | string
-    /**
-     * Override the account code/data state. When omitted, the selected block
-     * state is preserved.
-     */
-    state?: EmulateRawMessageAccountStateDataOverride
-    /**
-     * Override ShardAccount last transaction lt. Also updates account storage
-     * lastTransLt unless storageLastTransactionLt is provided.
-     */
-    lastTransactionLt?: bigint | string
-    /**
-     * Override ShardAccount last transaction hash.
-     */
-    lastTransactionHash?: bigint | string
-    /**
-     * Override AccountStorage lastTransLt separately from ShardAccount lt.
-     */
-    storageLastTransactionLt?: bigint | string
-}
-
-export type EmulateRawMessageAccountStateDataOverride =
-    | EmulateRawMessageAccountActiveStateOverride
-    | EmulateRawMessageAccountUninitStateOverride
-    | EmulateRawMessageAccountFrozenStateOverride
-
-export interface EmulateRawMessageAccountActiveStateOverride {
-    type: "active"
-    /**
-     * Replacement StateInit code cell BoC encoded as hex or base64. Omit to
-     * keep current code. Use null to clear code.
-     */
-    codeBoc?: string | null
-    /**
-     * Replacement StateInit data cell BoC encoded as hex or base64. Omit to
-     * keep current data. Use null to clear data.
-     */
-    dataBoc?: string | null
-}
-
-export interface EmulateRawMessageAccountUninitStateOverride {
-    type: "uninit"
-}
-
-export interface EmulateRawMessageAccountFrozenStateOverride {
-    type: "frozen"
-    /**
-     * Frozen account state hash. Omit to keep current hash when base state is
-     * already frozen, otherwise zero is used.
-     */
-    stateHash?: bigint | string
-}
-
 /**
  * Tolk compiler output required to map TVM execution back to source locations.
  */
@@ -287,38 +193,38 @@ export interface Trace {
 export interface TraceNode {
     tx_hash: string
     in_msg_hash?: string
-    in_msg?: ApiMessage | null
+    in_msg?: InMessage | null
     transaction?: Transaction
     children?: readonly TraceNode[]
 }
 
-export interface ApiMessage {
+interface ToncenterMessage {
     hash: string
-    source?: string
-    destination?: string
+    source: string | null
+    destination: string | null
     value: string
-    value_extra_currencies?: Record<string, unknown>
+    value_extra_currencies: Record<string, unknown>
     fwd_fee: string
     ihr_fee: string
     created_lt: string
-    created_at: string
-    opcode?: string | number | null
+    created_at: string | null
+    opcode: string | number | null
     ihr_disabled: boolean
     bounce: boolean
     bounced: boolean
-    import_fee: string
+    import_fee: string | null
     message_content: {
         hash: string
         body: string
-        decoded?: Record<string, unknown>
+        decoded: Record<string, unknown> | null
     }
-    init_state?: {
+    init_state: {
         hash: string
         body: string
-    }
+    } | null
 }
 
-export type OutMessage = ApiMessage
+export type OutMessage = ToncenterMessage
 
 export interface Transaction {
     account: string
@@ -333,13 +239,12 @@ export interface Transaction {
     end_status: string
     total_fees: string
     total_fees_extra_currencies: Record<string, unknown>
-    description: Description
+    description?: Description
     block_ref: BlockRef
-    in_msg?: ApiMessage | null
+    in_msg?: InMessage | null
     out_msgs: OutMessage[]
     account_state_before?: AccountState | null
     account_state_after?: AccountState | null
-    child_transactions?: readonly string[] | null
     emulated: boolean
 }
 
@@ -362,7 +267,7 @@ export interface Description {
     credit_ph?: {
         credit: string
     }
-    compute_ph: {
+    compute_ph?: {
         skipped: boolean
         reason?: string
         success: boolean
@@ -379,7 +284,7 @@ export interface Description {
         vm_init_state_hash?: string
         vm_final_state_hash?: string
     }
-    action: {
+    action?: {
         success: boolean
         valid?: boolean
         no_funds?: boolean
@@ -406,18 +311,16 @@ export interface BlockRef {
     seqno: number
 }
 
-export type InMessage = ApiMessage
+export type InMessage = ToncenterMessage
 
 export interface AccountState {
     hash: string
-    balance: string | null
-    code_boc?: string | null
-    extra_currencies: Record<string, string> | null
-    account_status: string | null
-    data_boc?: string | null
-    frozen_hash?: string | null
-    data_hash?: string | null
-    code_hash?: string | null
+    balance: string
+    extra_currencies: Record<string, unknown>
+    account_status: string
+    frozen_hash: string | null
+    data_hash: string
+    code_hash: string
 }
 
 // Raw transaction BoC paired with the shard block that contains it.
@@ -653,17 +556,6 @@ export interface TraceReplayResult {
         /** Executor source commit hash. */
         commitHash: string
         /** Executor source commit date. */
-        commitDate: string
-    }
-}
-
-export interface EmulateRawMessageResult {
-    rootTxHash: string
-    transactions: Record<string, TraceResult>
-    trace: Trace
-    stateUpdateHashOk: boolean
-    emulatorVersion: {
-        commitHash: string
         commitDate: string
     }
 }
