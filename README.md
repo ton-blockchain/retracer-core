@@ -5,6 +5,7 @@
 ## Features
 
 - **Detailed transaction tracing**: Emulate transaction execution in an environment identical to TON blockchain's mainnet.
+- **Full trace replay**: Reproduce every transaction in a trace while preserving the canonical transaction order and per-account state.
 - **Block and account data collection**: Obtain account state snapshots, block configuration, and transaction history.
 - **Work with libraries and contracts**: Automatic loading and handling of exotic library cells.
 - **Analysis of incoming/outgoing messages, balance calculations, and VM log collection.**
@@ -69,6 +70,49 @@ if (baseTx === undefined) {
 }
 const result4 = await retraceBaseTx(RETRACE_MAINNET_NETWORK, baseTx)
 ```
+
+### Full Trace Replay
+
+Use `retraceTrace` when a single transaction is not enough and you need the result of every
+transaction in its complete message trace. The input may be the hash of any transaction in the
+trace; `rootTxHash` identifies the actual trace root and can therefore differ from the input.
+
+```ts
+import {RETRACE_MAINNET_NETWORK, retraceTrace} from "@ton/retracer-core"
+
+const replay = await retraceTrace(RETRACE_MAINNET_NETWORK, txHash)
+
+if (!replay.stateUpdateHashOk) {
+    throw new Error("At least one transaction diverged from the on-chain state update")
+}
+
+const rootTransaction = replay.transactions[replay.rootTxHash]
+console.log("root", rootTransaction)
+for (const [hash, transaction] of Object.entries(replay.transactions)) {
+    console.log(hash, transaction.inMsg, transaction.money, transaction.emulatedTx)
+}
+```
+
+`retraceTrace` returns a `TraceReplayResult`:
+
+- `rootTxHash` — normalized lowercase hex hash of the trace root, without a `0x` prefix.
+- `transactions` — `TraceResult` values keyed by normalized transaction hash. Entries are
+  populated in Toncenter's `transactions_order` when it is available, with logical-time and trace
+  tree fallbacks for compatible endpoints that omit it.
+- `stateUpdateHashOk` — `true` only when every replayed transaction produced the same state update
+  as the on-chain transaction. Do not use replayed state changes as authoritative when this value
+  is `false`.
+- `emulatorVersion` — TON Sandbox executor version used for the replay.
+
+Replay is sequential because each transaction may provide the account state required by a later
+transaction. Missing public libraries are loaded automatically and the trace is restarted with the
+expanded library set. `options.additionalLibs` can be used to provide libraries that are not
+available from the configured endpoint.
+
+The method rejects incomplete traces rather than returning partial state changes. It also rejects
+when the trace is missing, empty, references unavailable transactions, cannot load required block
+context or libraries, or when transaction emulation fails. Network and Toncenter errors are passed
+through to the caller.
 
 ### Helper Methods
 

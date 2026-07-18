@@ -20,6 +20,10 @@ export interface RetraceNetworkConfig {
 }
 
 export interface RetraceOptions {
+  /**
+   * Additional TVM libraries as `[hash, code]` pairs. Use this for libraries
+   * that are not available from the configured Toncenter-compatible endpoint.
+   */
   additionalLibs?: [bigint, Cell][]
   /**
    * Optional Tolk compiler source map. Provide this to include source-level
@@ -152,30 +156,75 @@ export interface TransactionData {
   address_book: Record<string, AddressBookEntry>
 }
 
-export interface OutMessage {
+// TonCenter v3 API response for get traces
+export interface TraceData {
+  traces: Trace[]
+  address_book: Record<string, unknown>
+  metadata?: Record<string, unknown>
+}
+
+export interface Trace {
+  trace_id: string
+  external_hash?: string | null
+  mc_seqno_start: string
+  mc_seqno_end: string
+  start_lt: string
+  start_utime: number
+  end_lt: string
+  end_utime: number
+  is_incomplete: boolean
+  trace: TraceNode
+  transactions: Record<string, Transaction>
+  /**
+   * Canonical transaction processing order returned by Toncenter. Compatible
+   * endpoints may omit it, in which case retrace uses logical time and the
+   * trace tree as fallbacks.
+   */
+  transactions_order?: readonly string[]
+  trace_info: {
+    transactions: number
+    messages: number
+    pending_messages: number
+    trace_state: string
+    classification_state: string
+  }
+}
+
+export interface TraceNode {
+  tx_hash: string
+  in_msg_hash?: string
+  in_msg?: InMessage | null
+  transaction?: Transaction
+  children?: readonly TraceNode[]
+}
+
+interface ToncenterMessage {
   hash: string
-  source: string
-  destination: string
+  source: string | null
+  destination: string | null
   value: string
+  value_extra_currencies: Record<string, unknown>
   fwd_fee: string
   ihr_fee: string
   created_lt: string
-  created_at: string
-  opcode: string
+  created_at: string | null
+  opcode: string | number | null
   ihr_disabled: boolean
   bounce: boolean
   bounced: boolean
-  import_fee: string
+  import_fee: string | null
   message_content: {
     hash: string
     body: string
-    decoded: Record<string, unknown>
+    decoded: Record<string, unknown> | null
   }
   init_state: {
     hash: string
     body: string
-  }
+  } | null
 }
+
+export type OutMessage = ToncenterMessage
 
 export interface Transaction {
   account: string
@@ -207,43 +256,51 @@ export interface AddressBookEntry {
 export interface Description {
   type: string
   aborted: boolean
-  destroyed: boolean
-  credit_first: boolean
+  destroyed?: boolean
+  credit_first?: boolean
+  is_tock?: boolean
   storage_ph?: {
-    storage_fees_collected: string
-    status_change: string
+    storage_fees_collected?: string
+    storage_fees_due?: string
+    status_change?: string
   }
   credit_ph?: {
     credit: string
   }
   compute_ph?: {
     skipped: boolean
+    reason?: string
     success: boolean
-    msg_state_used: boolean
-    account_activated: boolean
-    gas_fees: string
-    gas_used: string
-    gas_limit: string
-    mode: number
+    msg_state_used?: boolean
+    account_activated?: boolean
+    gas_fees?: string
+    gas_used?: string
+    gas_limit?: string
+    gas_credit?: string
+    mode?: number
     exit_code: number
-    vm_steps: number
-    vm_init_state_hash: string
-    vm_final_state_hash: string
+    exit_arg?: number
+    vm_steps?: number
+    vm_init_state_hash?: string
+    vm_final_state_hash?: string
   }
   action?: {
     success: boolean
-    valid: boolean
-    no_funds: boolean
-    status_change: string
+    valid?: boolean
+    no_funds?: boolean
+    status_change?: string
     result_code: number
-    tot_actions: number
-    spec_actions: number
-    skipped_actions: number
-    msgs_created: number
-    action_list_hash: string
-    tot_msg_size: {
-      cells: string
-      bits: string
+    result_arg?: number
+    tot_actions?: number
+    spec_actions?: number
+    skipped_actions?: number
+    msgs_created?: number
+    total_fwd_fees?: string
+    total_action_fees?: string
+    action_list_hash?: string
+    tot_msg_size?: {
+      cells?: string
+      bits?: string
     }
   }
 }
@@ -254,31 +311,7 @@ export interface BlockRef {
   seqno: number
 }
 
-export interface InMessage {
-  hash: string
-  source?: string | null
-  destination?: string | null
-  value: string
-  value_extra_currencies: Record<string, unknown>
-  fwd_fee: string
-  ihr_fee: string
-  created_lt: string
-  created_at: number
-  opcode: string
-  ihr_disabled: boolean
-  bounce: boolean
-  bounced: boolean
-  import_fee: string | null
-  message_content: {
-    hash: string
-    body: string
-    decoded: Record<string, unknown>
-  }
-  init_state: {
-    hash: string
-    body: string
-  }
-}
+export type InMessage = ToncenterMessage
 
 export interface AccountState {
   hash: string
@@ -493,6 +526,36 @@ export interface TraceResult {
   sourceTrace?: SourceTraceResponse
   emulatorVersion: {
     commitHash: string
+    commitDate: string
+  }
+}
+
+/**
+ * Result of replaying a complete message trace with `retraceTrace`.
+ */
+export interface TraceReplayResult {
+  /**
+   * Normalized lowercase hex hash of the trace root, without a `0x` prefix.
+   * It can differ from the input hash when a child transaction was requested.
+   */
+  rootTxHash: string
+  /**
+   * Per-transaction replay results keyed by normalized lowercase hex hash.
+   * Entries are populated in replay order.
+   */
+  transactions: Record<string, TraceResult>
+  /**
+   * True only when every transaction produced the same state update as its
+   * on-chain counterpart. Replayed state changes are not authoritative when false.
+   */
+  stateUpdateHashOk: boolean
+  /**
+   * TON Sandbox executor version used for every transaction in this replay.
+   */
+  emulatorVersion: {
+    /** Executor source commit hash. */
+    commitHash: string
+    /** Executor source commit date. */
     commitDate: string
   }
 }

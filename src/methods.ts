@@ -318,6 +318,7 @@ export interface PrevBlocksUsage {
  */
 export const detectPrevBlocksUsage = (roots: (Cell | undefined)[]): PrevBlocksUsage => {
   const found: Set<string> = new Set()
+  let inspectionFailed = false
   for (const root of roots) {
     if (!root) {
       continue
@@ -325,11 +326,11 @@ export const detectPrevBlocksUsage = (roots: (Cell | undefined)[]): PrevBlocksUs
     try {
       collectInstructionNames(runtime.decompileCell(root), found)
     } catch {
-      // not disassemblable — assume it does not use prev_blocks_info
+      inspectionFailed = true
     }
   }
-
-  const with100 = found.has("PREVMCBLOCKS_100") || found.has("PREVBLOCKSINFOTUPLE")
+  const with100 =
+    inspectionFailed || found.has("PREVMCBLOCKS_100") || found.has("PREVBLOCKSINFOTUPLE")
   const needed = with100 || found.has("PREVMCBLOCKS") || found.has("PREVKEYBLOCK")
   return {needed, with100}
 }
@@ -480,11 +481,13 @@ export const getBlockAccount = async (
   // back to the current block's state as best approximation.
   // stateUpdateHashOk will be false for genesis transactions.
   const seqno = mcSeqno > 1 ? mcSeqno - 1 : mcSeqno
-
   const {result} = await toncenterV2Get<GetShardAccountCellResponse>(
     network,
     "getShardAccountCell",
-    {address: toncenterAddressParam(network, address), seqno},
+    {
+      address: toncenterAddressParam(network, address),
+      seqno,
+    },
   )
   if (typeof result !== "object" || typeof result.bytes !== "string") {
     throw new Error("getShardAccountCell response is missing result.bytes")
@@ -623,6 +626,7 @@ export const collectUsedLibraries = async (
  * @param prevTxsInBlock      Transactions to replay (oldest → newest).
  * @param emulate             Helper that runs a single transaction.
  * @param shardAccountBase64  Starting shard‑account (base64).
+ * @param onEmulated          Optional callback invoked after each successful replay.
  * @returns                   `{ prevBalance, shardAccountBase64 }`
  *                            after applying all txs.
  */
@@ -631,6 +635,7 @@ export const emulatePreviousTransactions = async (
   prevTxsInBlock: Transaction[],
   emulate: (tx: Transaction, shardAccountStr: string) => Promise<EmulationResult>,
   shardAccountBase64: string,
+  onEmulated?: (result: EmulationResultSuccess) => Promise<void>,
 ): Promise<{prevBalance: bigint; shardAccountBase64: string}> => {
   if (prevTxsInBlock.length === 0) {
     return {prevBalance, shardAccountBase64}
@@ -643,6 +648,8 @@ export const emulatePreviousTransactions = async (
         `Transaction failed for lt: ${tx.lt}, logs: ${res.logs}, debugLogs: ${res.debugLogs}`,
       )
     }
+
+    await onEmulated?.(res.result)
 
     // since we change state at each transaction we need to save new state as current one
     shardAccountBase64 = res.result.shardAccount
@@ -682,7 +689,6 @@ export const prepareEmulator = async (
     if (!inMsg) throw new Error("No in_message was found in transaction")
     const messageCell =
       extractRawInMessageCell(tx) ?? beginCell().store(storeMessage(inMsg)).endCell()
-
     return executor.runTransaction({
       config: blockConfig,
       libs: libs ?? null,
@@ -826,7 +832,7 @@ export const computeFinalData = (
           }
   } else {
     throw new Error(
-      "TxTracer doesn't support this transaction type. Given type: " + emulatedTx.description.type,
+      `TxTracer doesn't support this transaction type. Given type: ${emulatedTx.description.type}`,
     )
   }
 
