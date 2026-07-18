@@ -1,14 +1,14 @@
-node_modules
-.DS_Store
+# IDE files
+.vscode
 .idea
-dist/
 
-# yarn
-yarn-error.log
-.yarn/
+# OS
+.DS_Store
 
-# eslint
-.eslintcache
+# Coverage
+/coverage
+*.lcov
 
-# coverage
-coverage/
+# Node
+node_modules
+dist

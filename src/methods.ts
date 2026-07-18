@@ -1,45 +1,45 @@
 import {
-    Address,
-    beginCell,
-    Cell,
-    Dictionary,
-    loadOutList,
-    loadShardAccount,
-    loadTransaction,
-    ShardAccount,
-    storeMessage,
-    storeShardAccount,
-    Transaction,
+  Address,
+  beginCell,
+  Cell,
+  Dictionary,
+  loadOutList,
+  loadShardAccount,
+  loadTransaction,
+  type ShardAccount,
+  storeMessage,
+  storeShardAccount,
+  type Transaction,
 } from "@ton/core"
 import {
-    Block,
-    BlockRef,
-    BlocksResponse,
-    ComputeInfo,
-    RawTransaction,
-    RetraceNetworkConfig,
-    TraceMoneyResult,
-    TransactionData,
-} from "./types"
-import {
-    BlockId,
-    EmulationResult,
-    EmulationResultSuccess,
-    Executor,
-    PrevBlocksInfo,
-    TickOrTock,
+  type BlockId,
+  type EmulationResult,
+  type EmulationResultSuccess,
+  Executor,
+  type PrevBlocksInfo,
+  type TickOrTock,
 } from "@ton/sandbox/dist/executor/Executor"
-import {runtime} from "ton-assembly"
+import {runtime} from "@ton/tasm"
 import {
-    toncenterAddressParam,
-    toncenterHashToBuffer,
-    toncenterV2Get,
-    toncenterV2HashParam,
-    toncenterV2JsonRpc,
-    toncenterV3Get,
-    toncenterV3HashParam,
-    toncenterV3ShardParam,
+  toncenterAddressParam,
+  toncenterHashToBuffer,
+  toncenterV2Get,
+  toncenterV2HashParam,
+  toncenterV2JsonRpc,
+  toncenterV3Get,
+  toncenterV3HashParam,
+  toncenterV3ShardParam,
 } from "./networks"
+import type {
+  Block,
+  BlockRef,
+  BlocksResponse,
+  ComputeInfo,
+  RawTransaction,
+  RetraceNetworkConfig,
+  TraceMoneyResult,
+  TransactionData,
+} from "./types"
 
 /**
  * Minimal “handle” for locating a transaction on the TON blockchain.
@@ -50,22 +50,22 @@ import {
  * Can be obtained by {@link findBaseTxByHash}.
  */
 export interface BaseTxInfo {
-    /**
-     * Logical‑time of the transaction.
-     */
-    lt: bigint
-    /**
-     * Raw 256‑bit hash of the transaction BoC.
-     */
-    hash: Buffer
-    /**
-     * Contract address that issued / owns the transaction.
-     */
-    address: Address
-    /**
-     * Shard block reference returned by Toncenter v3 for this transaction.
-     */
-    block: BlockRef
+  /**
+   * Logical‑time of the transaction.
+   */
+  lt: bigint
+  /**
+   * Raw 256‑bit hash of the transaction BoC.
+   */
+  hash: Buffer
+  /**
+   * Contract address that issued / owns the transaction.
+   */
+  address: Address
+  /**
+   * Shard block reference returned by Toncenter v3 for this transaction.
+   */
+  block: BlockRef
 }
 
 /**
@@ -74,29 +74,29 @@ export interface BaseTxInfo {
  * @param txHash  Transaction hash to find.
  */
 export const findBaseTxByHash = async (
-    network: RetraceNetworkConfig,
-    txHash: string,
+  network: RetraceNetworkConfig,
+  txHash: string,
 ): Promise<BaseTxInfo | undefined> => {
-    const requestedHash = toncenterHashToBuffer(txHash)
-    const transactionInfo = await toncenterV3Get<TransactionData>(network, "transactions", {
-        hash: toncenterV3HashParam(requestedHash),
-        limit: 1,
-    })
+  const requestedHash = toncenterHashToBuffer(txHash)
+  const transactionInfo = await toncenterV3Get<TransactionData>(network, "transactions", {
+    hash: toncenterV3HashParam(requestedHash),
+    limit: 1,
+  })
 
-    const rawTx = transactionInfo.transactions.at(0)
-    if (rawTx === undefined) {
-        return undefined
-    }
+  const rawTx = transactionInfo.transactions.at(0)
+  if (rawTx === undefined) {
+    return undefined
+  }
 
-    const lt = BigInt(rawTx.lt)
-    const hash = toncenterHashToBuffer(rawTx.hash)
-    if (!hash.equals(requestedHash)) {
-        return undefined
-    }
-    const address = Address.parseRaw(rawTx.account)
-    const block = rawTx.block_ref
+  const lt = BigInt(rawTx.lt)
+  const hash = toncenterHashToBuffer(rawTx.hash)
+  if (!hash.equals(requestedHash)) {
+    return undefined
+  }
+  const address = Address.parseRaw(rawTx.account)
+  const block = rawTx.block_ref
 
-    return {lt, hash, address, block}
+  return {lt, hash, address, block}
 }
 
 /**
@@ -111,51 +111,51 @@ export const findBaseTxByHash = async (
  * @param info    Base transaction information for search.
  */
 export const findRawTxByHash = async (
-    network: RetraceNetworkConfig,
-    info: BaseTxInfo,
+  network: RetraceNetworkConfig,
+  info: BaseTxInfo,
 ): Promise<RawTransaction> => {
-    const {lt, hash, address, block} = info
-    const response = await toncenterV2JsonRpc<GetTransactionsResponse>(network, "getTransactions", {
-        address: toncenterAddressParam(network, address),
-        lt: lt.toString(),
-        hash: toncenterV2HashParam(hash),
-        limit: 1,
-        archival: true,
-    })
+  const {lt, hash, address, block} = info
+  const response = await toncenterV2JsonRpc<GetTransactionsResponse>(network, "getTransactions", {
+    address: toncenterAddressParam(network, address),
+    lt: lt.toString(),
+    hash: toncenterV2HashParam(hash),
+    limit: 1,
+    archival: true,
+  })
 
-    const hashBase64 = toncenterV2HashParam(hash)
-    const rawTransaction = response.result?.find(
-        item => item.transaction_id.lt === lt.toString() && item.transaction_id.hash === hashBase64,
-    )
-    if (rawTransaction === undefined) {
-        throw new Error("getTransactions response does not contain requested transaction")
-    }
+  const hashBase64 = toncenterV2HashParam(hash)
+  const rawTransaction = response.result?.find(
+    item => item.transaction_id.lt === lt.toString() && item.transaction_id.hash === hashBase64,
+  )
+  if (rawTransaction === undefined) {
+    throw new Error("getTransactions response does not contain requested transaction")
+  }
 
-    const [txCell] = Cell.fromBoc(Buffer.from(rawTransaction.data, "base64"))
+  const [txCell] = Cell.fromBoc(Buffer.from(rawTransaction.data, "base64"))
 
-    return {
-        block: {
-            workchain: block.workchain,
-            seqno: block.seqno,
-            shard: block.shard,
-            rootHash: "",
-            fileHash: "",
-        },
-        tx: loadTransaction(txCell.beginParse()),
-    }
+  return {
+    block: {
+      workchain: block.workchain,
+      seqno: block.seqno,
+      shard: block.shard,
+      rootHash: "",
+      fileHash: "",
+    },
+    tx: loadTransaction(txCell.beginParse()),
+  }
 }
 
 interface GetTransactionsResponse {
-    ok: boolean
-    error?: string
-    code?: number
-    result?: {
-        data: string
-        transaction_id: {
-            lt: string
-            hash: string
-        }
-    }[]
+  ok: boolean
+  error?: string
+  code?: number
+  result?: {
+    data: string
+    transaction_id: {
+      lt: string
+      hash: string
+    }
+  }[]
 }
 
 const GET_TRANSACTIONS_LIMIT = 1000
@@ -170,18 +170,18 @@ const GET_TRANSACTIONS_LIMIT = 1000
  *                 if Toncenter cannot find it.
  */
 export const findShardBlockForTx = async (
-    network: RetraceNetworkConfig,
-    tx: RawTransaction,
+  network: RetraceNetworkConfig,
+  tx: RawTransaction,
 ): Promise<Block | undefined> => {
-    const shard = tx.block
+  const shard = tx.block
 
-    const response = await toncenterV3Get<BlocksResponse>(network, "blocks", {
-        workchain: shard.workchain,
-        shard: toncenterV3ShardParam(shard.shard),
-        seqno: shard.seqno,
-    })
+  const response = await toncenterV3Get<BlocksResponse>(network, "blocks", {
+    workchain: shard.workchain,
+    shard: toncenterV3ShardParam(shard.shard),
+    seqno: shard.seqno,
+  })
 
-    return response.blocks[0]
+  return response.blocks[0]
 }
 
 /**
@@ -195,30 +195,30 @@ export const findShardBlockForTx = async (
  * @returns        The earliest account transaction lt in the same shard block.
  */
 export const findMinLtInShardBlock = async (
-    network: RetraceNetworkConfig,
-    address: Address,
-    block: RawTransaction["block"],
-    targetLt: bigint,
+  network: RetraceNetworkConfig,
+  address: Address,
+  block: RawTransaction["block"],
+  targetLt: bigint,
 ): Promise<bigint> => {
-    const response = await toncenterV3Get<TransactionData>(network, "transactions", {
-        account: address.toRawString(),
-        workchain: block.workchain,
-        shard: toncenterV3ShardParam(block.shard),
-        seqno: block.seqno,
-        end_lt: targetLt.toString(),
-        limit: GET_TRANSACTIONS_LIMIT,
-        sort: "asc",
-    })
+  const response = await toncenterV3Get<TransactionData>(network, "transactions", {
+    account: address.toRawString(),
+    workchain: block.workchain,
+    shard: toncenterV3ShardParam(block.shard),
+    seqno: block.seqno,
+    end_lt: targetLt.toString(),
+    limit: GET_TRANSACTIONS_LIMIT,
+    sort: "asc",
+  })
 
-    let minLt = targetLt
-    for (const transaction of response.transactions) {
-        const lt = BigInt(transaction.lt)
-        if (lt < minLt) {
-            minLt = lt
-        }
+  let minLt = targetLt
+  for (const transaction of response.transactions) {
+    const lt = BigInt(transaction.lt)
+    if (lt < minLt) {
+      minLt = lt
     }
+  }
 
-    return minLt
+  return minLt
 }
 
 /**
@@ -233,35 +233,35 @@ export const findMinLtInShardBlock = async (
  * @returns        Transactions ordered **newest → oldest**.
  */
 export const findAllTransactionsBetween = async (
-    network: RetraceNetworkConfig,
-    baseTx: BaseTxInfo,
-    minLt: bigint,
+  network: RetraceNetworkConfig,
+  baseTx: BaseTxInfo,
+  minLt: bigint,
 ): Promise<Transaction[]> => {
-    const response = await toncenterV2JsonRpc<GetTransactionsResponse>(network, "getTransactions", {
-        address: toncenterAddressParam(network, baseTx.address),
-        lt: baseTx.lt.toString(),
-        to_lt: (minLt - 1n).toString(),
-        hash: toncenterV2HashParam(baseTx.hash),
-        limit: GET_TRANSACTIONS_LIMIT,
-        archival: true,
-    })
+  const response = await toncenterV2JsonRpc<GetTransactionsResponse>(network, "getTransactions", {
+    address: toncenterAddressParam(network, baseTx.address),
+    lt: baseTx.lt.toString(),
+    to_lt: (minLt - 1n).toString(),
+    hash: toncenterV2HashParam(baseTx.hash),
+    limit: GET_TRANSACTIONS_LIMIT,
+    archival: true,
+  })
 
-    const transactions = response.result ?? []
-    const lastTransaction = transactions.at(-1)
-    if (
-        transactions.length === GET_TRANSACTIONS_LIMIT &&
-        lastTransaction !== undefined &&
-        BigInt(lastTransaction.transaction_id.lt) > minLt
-    ) {
-        throw new Error(
-            `Too many account transactions in shard block: replay range exceeds ${GET_TRANSACTIONS_LIMIT}`,
-        )
-    }
+  const transactions = response.result ?? []
+  const lastTransaction = transactions.at(-1)
+  if (
+    transactions.length === GET_TRANSACTIONS_LIMIT &&
+    lastTransaction !== undefined &&
+    BigInt(lastTransaction.transaction_id.lt) > minLt
+  ) {
+    throw new Error(
+      `Too many account transactions in shard block: replay range exceeds ${GET_TRANSACTIONS_LIMIT}`,
+    )
+  }
 
-    return transactions.map(rawTransaction => {
-        const [transactionCell] = Cell.fromBoc(Buffer.from(rawTransaction.data, "base64"))
-        return loadTransaction(transactionCell.beginParse())
-    })
+  return transactions.map(rawTransaction => {
+    const [transactionCell] = Cell.fromBoc(Buffer.from(rawTransaction.data, "base64"))
+    return loadTransaction(transactionCell.beginParse())
+  })
 }
 
 /**
@@ -274,28 +274,28 @@ export const findAllTransactionsBetween = async (
  * @returns         Config cell as a string.
  */
 export const getBlockConfig = async (
-    network: RetraceNetworkConfig,
-    mcSeqno: number,
+  network: RetraceNetworkConfig,
+  mcSeqno: number,
 ): Promise<string> => {
-    const response = await toncenterV2Get<GetConfigAllResponse>(network, "getConfigAll", {
-        seqno: mcSeqno,
-    })
-    const bytes = response.result?.config?.bytes
-    if (typeof bytes !== "string" || bytes.length === 0) {
-        throw new Error("getConfigAll response is missing result.config.bytes")
-    }
-    return bytes
+  const response = await toncenterV2Get<GetConfigAllResponse>(network, "getConfigAll", {
+    seqno: mcSeqno,
+  })
+  const bytes = response.result?.config?.bytes
+  if (typeof bytes !== "string" || bytes.length === 0) {
+    throw new Error("getConfigAll response is missing result.config.bytes")
+  }
+  return bytes
 }
 
 interface GetConfigAllResponse {
-    ok: boolean
-    error?: string
-    code?: number
-    result?: {
-        config?: {
-            bytes?: string
-        }
+  ok: boolean
+  error?: string
+  code?: number
+  result?: {
+    config?: {
+      bytes?: string
     }
+  }
 }
 
 const MASTERCHAIN_SHARD = -(1n << 63n)
@@ -303,8 +303,8 @@ const MASTERCHAIN_SHARD_HEX = "8000000000000000"
 const LAST_MC_BLOCKS_COUNT = 16
 
 export interface PrevBlocksUsage {
-    needed: boolean
-    with100: boolean
+  needed: boolean
+  with100: boolean
 }
 
 /**
@@ -317,23 +317,22 @@ export interface PrevBlocksUsage {
  * never touch it.
  */
 export const detectPrevBlocksUsage = (roots: (Cell | undefined)[]): PrevBlocksUsage => {
-    const found: Set<string> = new Set()
-    let inspectionFailed = false
-    for (const root of roots) {
-        if (!root) {
-            continue
-        }
-        try {
-            collectInstructionNames(runtime.decompileCell(root), found)
-        } catch {
-            inspectionFailed = true
-        }
+  const found: Set<string> = new Set()
+  let inspectionFailed = false
+  for (const root of roots) {
+    if (!root) {
+      continue
     }
-
-    const with100 =
-        inspectionFailed || found.has("PREVMCBLOCKS_100") || found.has("PREVBLOCKSINFOTUPLE")
-    const needed = with100 || found.has("PREVMCBLOCKS") || found.has("PREVKEYBLOCK")
-    return {needed, with100}
+    try {
+      collectInstructionNames(runtime.decompileCell(root), found)
+    } catch {
+      inspectionFailed = true
+    }
+  }
+  const with100 =
+    inspectionFailed || found.has("PREVMCBLOCKS_100") || found.has("PREVBLOCKSINFOTUPLE")
+  const needed = with100 || found.has("PREVMCBLOCKS") || found.has("PREVKEYBLOCK")
+  return {needed, with100}
 }
 
 /**
@@ -342,28 +341,28 @@ export const detectPrevBlocksUsage = (roots: (Cell | undefined)[]): PrevBlocksUs
  * dictionaries.
  */
 function collectInstructionNames(value: unknown, found: Set<string>): void {
-    if (Array.isArray(value)) {
-        for (const item of value) {
-            collectInstructionNames(item, found)
-        }
-        return
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      collectInstructionNames(item, found)
     }
-    if (
-        value === null ||
-        typeof value !== "object" ||
-        value instanceof Cell ||
-        Buffer.isBuffer(value)
-    ) {
-        return
-    }
+    return
+  }
+  if (
+    value === null ||
+    typeof value !== "object" ||
+    value instanceof Cell ||
+    Buffer.isBuffer(value)
+  ) {
+    return
+  }
 
-    const name = (value as {$?: unknown}).$
-    if (typeof name === "string") {
-        found.add(name)
-    }
-    for (const item of Object.values(value)) {
-        collectInstructionNames(item, found)
-    }
+  const name = (value as {$?: unknown}).$
+  if (typeof name === "string") {
+    found.add(name)
+  }
+  for (const item of Object.values(value)) {
+    collectInstructionNames(item, found)
+  }
 }
 
 /**
@@ -378,84 +377,84 @@ function collectInstructionNames(value: unknown, found: Set<string>): void {
  * @param options  Set `with100` to also fetch `lastMcBlocks100`.
  */
 export const getPrevBlocksInfo = async (
-    network: RetraceNetworkConfig,
-    mcSeqno: number,
-    options?: {with100?: boolean},
+  network: RetraceNetworkConfig,
+  mcSeqno: number,
+  options?: {with100?: boolean},
 ): Promise<PrevBlocksInfo> => {
-    const header = await toncenterV2Get<GetBlockHeaderResponse>(network, "getBlockHeader", {
-        workchain: -1,
-        shard: MASTERCHAIN_SHARD_HEX,
-        seqno: mcSeqno,
-    })
+  const header = await toncenterV2Get<GetBlockHeaderResponse>(network, "getBlockHeader", {
+    workchain: -1,
+    shard: MASTERCHAIN_SHARD_HEX,
+    seqno: mcSeqno,
+  })
 
-    const lastSeqnos: number[] = []
-    for (let seqno = mcSeqno; seqno > Math.max(0, mcSeqno - LAST_MC_BLOCKS_COUNT); seqno--) {
-        lastSeqnos.push(seqno)
+  const lastSeqnos: number[] = []
+  for (let seqno = mcSeqno; seqno > Math.max(0, mcSeqno - LAST_MC_BLOCKS_COUNT); seqno--) {
+    lastSeqnos.push(seqno)
+  }
+
+  const with100 = options?.with100 ?? false
+  const seqnos100: number[] = []
+  if (with100) {
+    for (
+      let seqno = mcSeqno - (mcSeqno % 100);
+      seqno > 0 && seqnos100.length < LAST_MC_BLOCKS_COUNT;
+      seqno -= 100
+    ) {
+      seqnos100.push(seqno)
     }
+  }
 
-    const with100 = options?.with100 ?? false
-    const seqnos100: number[] = []
-    if (with100) {
-        for (
-            let seqno = mcSeqno - (mcSeqno % 100);
-            seqno > 0 && seqnos100.length < LAST_MC_BLOCKS_COUNT;
-            seqno -= 100
-        ) {
-            seqnos100.push(seqno)
-        }
+  // sequential on purpose: parallel lookups hit the toncenter
+  // per-IP rate limit, and this path is rare enough that a couple
+  // of extra seconds do not matter
+  const lookupAll = async (seqnos: number[]): Promise<BlockId[]> => {
+    const blocks: BlockId[] = []
+    for (const seqno of seqnos) {
+      blocks.push(await lookupMasterchainBlock(network, seqno))
     }
+    return blocks
+  }
 
-    // sequential on purpose: parallel lookups hit the toncenter
-    // per-IP rate limit, and this path is rare enough that a couple
-    // of extra seconds do not matter
-    const lookupAll = async (seqnos: number[]): Promise<BlockId[]> => {
-        const blocks: BlockId[] = []
-        for (const seqno of seqnos) {
-            blocks.push(await lookupMasterchainBlock(network, seqno))
-        }
-        return blocks
-    }
+  const prevKeyBlock = await lookupMasterchainBlock(network, header.result.prev_key_block_seqno)
+  const lastMcBlocks = await lookupAll(lastSeqnos)
+  const lastMcBlocks100 = with100 ? await lookupAll(seqnos100) : undefined
 
-    const prevKeyBlock = await lookupMasterchainBlock(network, header.result.prev_key_block_seqno)
-    const lastMcBlocks = await lookupAll(lastSeqnos)
-    const lastMcBlocks100 = with100 ? await lookupAll(seqnos100) : undefined
-
-    return {prevKeyBlock, lastMcBlocks, lastMcBlocks100}
+  return {prevKeyBlock, lastMcBlocks, lastMcBlocks100}
 }
 
 interface LookupBlockResponse {
-    ok: boolean
-    result: {
-        seqno: number
-        root_hash: string
-        file_hash: string
-    }
+  ok: boolean
+  result: {
+    seqno: number
+    root_hash: string
+    file_hash: string
+  }
 }
 
 interface GetBlockHeaderResponse {
-    ok: boolean
-    result: {
-        prev_key_block_seqno: number
-    }
+  ok: boolean
+  result: {
+    prev_key_block_seqno: number
+  }
 }
 
 async function lookupMasterchainBlock(
-    network: RetraceNetworkConfig,
-    seqno: number,
+  network: RetraceNetworkConfig,
+  seqno: number,
 ): Promise<BlockId> {
-    const res = await toncenterV2Get<LookupBlockResponse>(network, "lookupBlock", {
-        workchain: -1,
-        shard: MASTERCHAIN_SHARD_HEX,
-        seqno,
-    })
+  const res = await toncenterV2Get<LookupBlockResponse>(network, "lookupBlock", {
+    workchain: -1,
+    shard: MASTERCHAIN_SHARD_HEX,
+    seqno,
+  })
 
-    return {
-        workchain: -1,
-        shard: MASTERCHAIN_SHARD,
-        seqno: res.result.seqno,
-        rootHash: Buffer.from(res.result.root_hash, "base64"),
-        fileHash: Buffer.from(res.result.file_hash, "base64"),
-    }
+  return {
+    workchain: -1,
+    shard: MASTERCHAIN_SHARD,
+    seqno: res.result.seqno,
+    rootHash: Buffer.from(res.result.root_hash, "base64"),
+    fileHash: Buffer.from(res.result.file_hash, "base64"),
+  }
 }
 
 /**
@@ -474,52 +473,52 @@ async function lookupMasterchainBlock(
  * @returns         ShardAccount representing state on master‑block N‑1.
  */
 export const getBlockAccount = async (
-    network: RetraceNetworkConfig,
-    address: Address,
-    mcSeqno: number,
+  network: RetraceNetworkConfig,
+  address: Address,
+  mcSeqno: number,
 ): Promise<ShardAccount> => {
-    // The genesis state (block 0) is not available via any API: fall
-    // back to the current block's state as best approximation.
-    // stateUpdateHashOk will be false for genesis transactions.
-    const seqno = mcSeqno > 1 ? mcSeqno - 1 : mcSeqno
-    const {result} = await toncenterV2Get<GetShardAccountCellResponse>(
-        network,
-        "getShardAccountCell",
-        {
-            address: toncenterAddressParam(network, address),
-            seqno,
-        },
-    )
-    if (typeof result !== "object" || typeof result.bytes !== "string") {
-        throw new Error("getShardAccountCell response is missing result.bytes")
-    }
+  // The genesis state (block 0) is not available via any API: fall
+  // back to the current block's state as best approximation.
+  // stateUpdateHashOk will be false for genesis transactions.
+  const seqno = mcSeqno > 1 ? mcSeqno - 1 : mcSeqno
+  const {result} = await toncenterV2Get<GetShardAccountCellResponse>(
+    network,
+    "getShardAccountCell",
+    {
+      address: toncenterAddressParam(network, address),
+      seqno,
+    },
+  )
+  if (typeof result !== "object" || typeof result.bytes !== "string") {
+    throw new Error("getShardAccountCell response is missing result.bytes")
+  }
 
-    const cell = Cell.fromBase64(result.bytes)
-    return loadShardAccount(cell.asSlice())
+  const cell = Cell.fromBase64(result.bytes)
+  return loadShardAccount(cell.asSlice())
 }
 
 interface GetShardAccountCellResponse {
-    ok: boolean
-    error?: string
-    code?: number
-    result?:
-        | string
-        | {
-              "@type": "tvm.cell"
-              bytes?: string
-          }
+  ok: boolean
+  error?: string
+  code?: number
+  result?:
+    | string
+    | {
+        "@type": "tvm.cell"
+        bytes?: string
+      }
 }
 
 interface GetLibrariesResponse {
-    ok: boolean
-    error?: string
-    code?: number
+  ok: boolean
+  error?: string
+  code?: number
+  result: {
     result: {
-        result: {
-            hash: string
-            data: string
-        }[]
-    }
+      hash: string
+      data: string
+    }[]
+  }
 }
 
 /**
@@ -531,18 +530,18 @@ interface GetLibrariesResponse {
  * @throws         Error if the library is missing on the server.
  */
 export const getLibraryByHash = async (
-    network: RetraceNetworkConfig,
-    hash: string,
+  network: RetraceNetworkConfig,
+  hash: string,
 ): Promise<Cell> => {
-    const response = await toncenterV2Get<GetLibrariesResponse>(network, "getLibraries", {
-        libraries: hash,
-    })
-    const data = response.result.result[0]?.data
-    if (typeof data !== "string" || data.length === 0) {
-        throw new Error(`Toncenter library response does not contain library ${hash}`)
-    }
+  const response = await toncenterV2Get<GetLibrariesResponse>(network, "getLibraries", {
+    libraries: hash,
+  })
+  const data = response.result.result[0]?.data
+  if (typeof data !== "string" || data.length === 0) {
+    throw new Error(`Toncenter library response does not contain library ${hash}`)
+  }
 
-    return Cell.fromBase64(data)
+  return Cell.fromBase64(data)
 }
 
 /**
@@ -559,62 +558,62 @@ export const getLibraryByHash = async (
  *                         original code is just an exotic library cell
  */
 export const collectUsedLibraries = async (
-    network: RetraceNetworkConfig,
-    account: ShardAccount,
-    tx: Transaction,
-    additionalLibs: [bigint, Cell][],
+  network: RetraceNetworkConfig,
+  account: ShardAccount,
+  tx: Transaction,
+  additionalLibs: [bigint, Cell][],
 ): Promise<[Cell | undefined, Cell | undefined]> => {
-    const libs = Dictionary.empty(Dictionary.Keys.BigUint(256), Dictionary.Values.Cell())
+  const libs = Dictionary.empty(Dictionary.Keys.BigUint(256), Dictionary.Values.Cell())
 
-    const addMaybeExoticLibrary = async (code: Cell | undefined): Promise<Cell | undefined> => {
-        const EXOTIC_LIBRARY_TAG = 2
-        if (code === undefined) return undefined
-        if (code.bits.length !== 256 + 8) return undefined // not an exotic library cell
+  const addMaybeExoticLibrary = async (code: Cell | undefined): Promise<Cell | undefined> => {
+    const EXOTIC_LIBRARY_TAG = 2
+    if (code === undefined) return undefined
+    if (code.bits.length !== 256 + 8) return undefined // not an exotic library cell
 
-        const cs = code.beginParse(true) // allow exotics
-        const tag = cs.loadUint(8)
-        if (tag !== EXOTIC_LIBRARY_TAG) return undefined // not a library cell
+    const cs = code.beginParse(true) // allow exotics
+    const tag = cs.loadUint(8)
+    if (tag !== EXOTIC_LIBRARY_TAG) return undefined // not a library cell
 
-        const libHash = cs.loadBuffer(32)
-        const libHashHex = libHash.toString("hex").toUpperCase()
-        const actualCode = await getLibraryByHash(network, libHashHex)
-        libs.set(BigInt(`0x${libHashHex}`), actualCode)
-        return actualCode
-    }
+    const libHash = cs.loadBuffer(32)
+    const libHashHex = libHash.toString("hex").toUpperCase()
+    const actualCode = await getLibraryByHash(network, libHashHex)
+    libs.set(BigInt(`0x${libHashHex}`), actualCode)
+    return actualCode
+  }
 
-    // if current contract code is exotic cell, we want to return actual code to the user
-    let loadedCellCode: Cell | undefined = undefined
+  // if current contract code is exotic cell, we want to return actual code to the user
+  let loadedCellCode: Cell | undefined
 
-    // 1. scan the *current* contract code for exotic‑library links
-    const state = account.account?.storage.state
-    if (state?.type === "active") {
-        // The contract is already deployed and “active” so its `code`
-        // cell may itself be a 264‑bit exotic library reference (tag 2).
-        // If that’s the case, download the real library code and
-        // register it in the `libs` dictionary.
-        loadedCellCode = await addMaybeExoticLibrary(state.state.code ?? undefined)
-    }
+  // 1. scan the *current* contract code for exotic‑library links
+  const state = account.account?.storage.state
+  if (state?.type === "active") {
+    // The contract is already deployed and “active” so its `code`
+    // cell may itself be a 264‑bit exotic library reference (tag 2).
+    // If that’s the case, download the real library code and
+    // register it in the `libs` dictionary.
+    loadedCellCode = await addMaybeExoticLibrary(state.state.code ?? undefined)
+  }
 
-    // 2. scan the *incoming StateInit* (if present)
-    const init = tx.inMessage?.init
-    if (init) {
-        // This transaction might *deploy* a brand‑new contract or
-        // *upgrade* the existing one. Its `StateInit.code` could also
-        // be an exotic library cell. We must preload such libraries as
-        // well, otherwise the sandbox would fail to resolve a library
-        // during emulation.
-        loadedCellCode ??= await addMaybeExoticLibrary(init.code ?? undefined)
-    }
+  // 2. scan the *incoming StateInit* (if present)
+  const init = tx.inMessage?.init
+  if (init) {
+    // This transaction might *deploy* a brand‑new contract or
+    // *upgrade* the existing one. Its `StateInit.code` could also
+    // be an exotic library cell. We must preload such libraries as
+    // well, otherwise the sandbox would fail to resolve a library
+    // during emulation.
+    loadedCellCode ??= await addMaybeExoticLibrary(init.code ?? undefined)
+  }
 
-    for (const [hash, lib] of additionalLibs) {
-        libs.set(hash, lib)
-    }
+  for (const [hash, lib] of additionalLibs) {
+    libs.set(hash, lib)
+  }
 
-    // no libs found, return undefined, for emulator this means no libraries
-    if (libs.size === 0) return [undefined, loadedCellCode]
+  // no libs found, return undefined, for emulator this means no libraries
+  if (libs.size === 0) return [undefined, loadedCellCode]
 
-    // emulator expects libraries as a Cell with immediate dictionary
-    return [beginCell().storeDictDirect(libs).endCell(), loadedCellCode]
+  // emulator expects libraries as a Cell with immediate dictionary
+  return [beginCell().storeDictDirect(libs).endCell(), loadedCellCode]
 }
 
 /**
@@ -632,36 +631,36 @@ export const collectUsedLibraries = async (
  *                            after applying all txs.
  */
 export const emulatePreviousTransactions = async (
-    prevBalance: bigint,
-    prevTxsInBlock: Transaction[],
-    emulate: (tx: Transaction, shardAccountStr: string) => Promise<EmulationResult>,
-    shardAccountBase64: string,
-    onEmulated?: (result: EmulationResultSuccess) => Promise<void>,
+  prevBalance: bigint,
+  prevTxsInBlock: Transaction[],
+  emulate: (tx: Transaction, shardAccountStr: string) => Promise<EmulationResult>,
+  shardAccountBase64: string,
+  onEmulated?: (result: EmulationResultSuccess) => Promise<void>,
 ): Promise<{prevBalance: bigint; shardAccountBase64: string}> => {
-    if (prevTxsInBlock.length === 0) {
-        return {prevBalance, shardAccountBase64}
-    }
-
-    for (const tx of prevTxsInBlock) {
-        const res = await emulate(tx, shardAccountBase64)
-        if (!res.result.success) {
-            throw new Error(
-                `Transaction failed for lt: ${tx.lt}, logs: ${res.logs}, debugLogs: ${res.debugLogs}`,
-            )
-        }
-
-        await onEmulated?.(res.result)
-
-        // since we change state at each transaction we need to save new state as current one
-        shardAccountBase64 = res.result.shardAccount
-
-        const shardAccount = loadShardAccount(Cell.fromBase64(shardAccountBase64).asSlice())
-        const newBalance = shardAccount.account?.storage.balance.coins
-
-        prevBalance = newBalance ?? 0n
-    }
-
+  if (prevTxsInBlock.length === 0) {
     return {prevBalance, shardAccountBase64}
+  }
+
+  for (const tx of prevTxsInBlock) {
+    const res = await emulate(tx, shardAccountBase64)
+    if (!res.result.success) {
+      throw new Error(
+        `Transaction failed for lt: ${tx.lt}, logs: ${res.logs}, debugLogs: ${res.debugLogs}`,
+      )
+    }
+
+    await onEmulated?.(res.result)
+
+    // since we change state at each transaction we need to save new state as current one
+    shardAccountBase64 = res.result.shardAccount
+
+    const shardAccount = loadShardAccount(Cell.fromBase64(shardAccountBase64).asSlice())
+    const newBalance = shardAccount.account?.storage.balance.coins
+
+    prevBalance = newBalance ?? 0n
+  }
+
+  return {prevBalance, shardAccountBase64}
 }
 
 /**
@@ -677,55 +676,55 @@ export const emulatePreviousTransactions = async (
  * @returns              `{ emulatorVersion, emulate }`
  */
 export const prepareEmulator = async (
-    blockConfig: string,
-    libs: Cell | undefined,
-    randSeed: Buffer,
-    prevBlocksInfo?: PrevBlocksInfo,
+  blockConfig: string,
+  libs: Cell | undefined,
+  randSeed: Buffer,
+  prevBlocksInfo?: PrevBlocksInfo,
 ) => {
-    const executor = await Executor.create()
-    const emulatorVersion = executor.getVersion()
+  const executor = await Executor.create()
+  const emulatorVersion = executor.getVersion()
 
-    async function emulate(tx: Transaction, shardAccountBase64: string): Promise<EmulationResult> {
-        const inMsg = tx.inMessage
-        if (!inMsg) throw new Error("No in_message was found in transaction")
-        const messageCell =
-            extractRawInMessageCell(tx) ?? beginCell().store(storeMessage(inMsg)).endCell()
-        return executor.runTransaction({
-            config: blockConfig,
-            libs: libs ?? null,
-            verbosity: "full_location_stack_verbose",
-            shardAccount: shardAccountBase64,
-            message: messageCell,
-            now: tx.now,
-            lt: tx.lt,
-            randomSeed: randSeed,
-            ignoreChksig: false,
-            debugEnabled: true,
-            prevBlocksInfo,
-        })
-    }
+  async function emulate(tx: Transaction, shardAccountBase64: string): Promise<EmulationResult> {
+    const inMsg = tx.inMessage
+    if (!inMsg) throw new Error("No in_message was found in transaction")
+    const messageCell =
+      extractRawInMessageCell(tx) ?? beginCell().store(storeMessage(inMsg)).endCell()
+    return executor.runTransaction({
+      config: blockConfig,
+      libs: libs ?? null,
+      verbosity: "full_location_stack_verbose",
+      shardAccount: shardAccountBase64,
+      message: messageCell,
+      now: tx.now,
+      lt: tx.lt,
+      randomSeed: randSeed,
+      ignoreChksig: false,
+      debugEnabled: true,
+      prevBlocksInfo,
+    })
+  }
 
-    async function emulateTickTock(
-        which: TickOrTock,
-        tx: Transaction,
-        shardAccountBase64: string,
-    ): Promise<EmulationResult> {
-        return executor.runTickTock({
-            config: blockConfig,
-            libs: libs ?? null,
-            verbosity: "full_location_stack_verbose",
-            shardAccount: shardAccountBase64,
-            which,
-            now: tx.now,
-            lt: tx.lt,
-            randomSeed: randSeed,
-            ignoreChksig: false,
-            debugEnabled: true,
-            prevBlocksInfo,
-        })
-    }
+  async function emulateTickTock(
+    which: TickOrTock,
+    tx: Transaction,
+    shardAccountBase64: string,
+  ): Promise<EmulationResult> {
+    return executor.runTickTock({
+      config: blockConfig,
+      libs: libs ?? null,
+      verbosity: "full_location_stack_verbose",
+      shardAccount: shardAccountBase64,
+      which,
+      now: tx.now,
+      lt: tx.lt,
+      randomSeed: randSeed,
+      ignoreChksig: false,
+      debugEnabled: true,
+      prevBlocksInfo,
+    })
+  }
 
-    return {emulatorVersion, emulate, emulateTickTock}
+  return {emulatorVersion, emulate, emulateTickTock}
 }
 
 /**
@@ -736,26 +735,26 @@ export const prepareEmulator = async (
  * emulated state, so the raw cell is preferred when available.
  */
 function extractRawInMessageCell(tx: Transaction): Cell | null {
-    try {
-        const s = tx.raw.beginParse()
-        s.loadUint(4) // transaction tag
-        s.loadBuffer(32) // account_addr
-        s.loadUintBig(64) // lt
-        s.loadBuffer(32) // prev_trans_hash
-        s.loadUintBig(64) // prev_trans_lt
-        s.loadUint(32) // now
-        s.loadUint(15) // outmsg_cnt
-        s.loadUint(2) // orig_status
-        s.loadUint(2) // end_status
-        const inOut = s.loadRef().beginParse() // ^[ in_msg out_msgs ]
-        const hasInMessage = inOut.loadBit()
-        if (!hasInMessage) {
-            return null
-        }
-        return inOut.loadRef()
-    } catch {
-        return null
+  try {
+    const s = tx.raw.beginParse()
+    s.loadUint(4) // transaction tag
+    s.loadBuffer(32) // account_addr
+    s.loadUintBig(64) // lt
+    s.loadBuffer(32) // prev_trans_hash
+    s.loadUintBig(64) // prev_trans_lt
+    s.loadUint(32) // now
+    s.loadUint(15) // outmsg_cnt
+    s.loadUint(2) // orig_status
+    s.loadUint(2) // end_status
+    const inOut = s.loadRef().beginParse() // ^[ in_msg out_msgs ]
+    const hasInMessage = inOut.loadBit()
+    if (!hasInMessage) {
+      return null
     }
+    return inOut.loadRef()
+  } catch {
+    return null
+  }
 }
 
 /**
@@ -772,87 +771,86 @@ function extractRawInMessageCell(tx: Transaction): Cell | null {
  *                       gas usage and the parsed `emulatedTx`.
  */
 export const computeFinalData = (
-    res: EmulationResultSuccess,
-    balanceBefore: bigint,
-    contractAddress?: Address,
+  res: EmulationResultSuccess,
+  balanceBefore: bigint,
+  contractAddress?: Address,
 ) => {
-    const shardAccount = loadShardAccount(Cell.fromBase64(res.shardAccount).asSlice())
-    const endBalance = shardAccount.account?.storage.balance.coins ?? 0n
+  const shardAccount = loadShardAccount(Cell.fromBase64(res.shardAccount).asSlice())
+  const endBalance = shardAccount.account?.storage.balance.coins ?? 0n
 
-    const emulatedTx = loadTransaction(Cell.fromBase64(res.transaction).asSlice())
+  const emulatedTx = loadTransaction(Cell.fromBase64(res.transaction).asSlice())
 
-    let src: Address | undefined = undefined
-    let dest: Address | undefined = undefined
-    let amount: bigint | undefined = undefined
+  let src: Address | undefined
+  let dest: Address | undefined
+  let amount: bigint | undefined
 
-    if (emulatedTx.inMessage) {
-        const msgSrc = emulatedTx.inMessage.info.src ?? undefined
-        const msgDest = emulatedTx.inMessage.info.dest
+  if (emulatedTx.inMessage) {
+    const msgSrc = emulatedTx.inMessage.info.src ?? undefined
+    const msgDest = emulatedTx.inMessage.info.dest
 
-        if (msgSrc !== undefined && !Address.isAddress(msgSrc)) {
-            throw new Error(`Invalid src address: ${String(msgSrc)}`)
-        }
-        if (!Address.isAddress(msgDest)) {
-            throw new Error(`Invalid dest address: ${String(msgDest)}`)
-        }
-
-        src = msgSrc
-        dest = msgDest
-
-        amount =
-            emulatedTx.inMessage.info.type === "internal"
-                ? emulatedTx.inMessage.info.value.coins
-                : undefined
-    } else if (contractAddress) {
-        dest = contractAddress
+    if (msgSrc !== undefined && !Address.isAddress(msgSrc)) {
+      throw new Error(`Invalid src address: ${String(msgSrc)}`)
+    }
+    if (!Address.isAddress(msgDest)) {
+      throw new Error(`Invalid dest address: ${String(msgDest)}`)
     }
 
-    if (!dest) {
-        throw new Error("Cannot determine contract address")
-    }
+    src = msgSrc
+    dest = msgDest
 
-    const sentTotal = calculateSentTotal(emulatedTx)
-    const totalFees = emulatedTx.totalFees.coins
+    amount =
+      emulatedTx.inMessage.info.type === "internal"
+        ? emulatedTx.inMessage.info.value.coins
+        : undefined
+  } else if (contractAddress) {
+    dest = contractAddress
+  }
 
-    let computeInfo: ComputeInfo
-    const desc = emulatedTx.description
-    if (desc.type === "generic" || desc.type === "tick-tock") {
-        const computePhase = desc.computePhase
-        computeInfo =
-            computePhase.type === "skipped"
-                ? "skipped"
-                : {
-                      success: computePhase.success,
-                      exitCode:
-                          computePhase.exitCode === 0
-                              ? (desc.actionPhase?.resultCode ?? 0)
-                              : computePhase.exitCode,
-                      vmSteps: computePhase.vmSteps,
-                      gasUsed: computePhase.gasUsed,
-                      gasFees: computePhase.gasFees,
-                  }
-    } else {
-        throw new Error(
-            "TxTracer doesn't support this transaction type. Given type: " +
-                emulatedTx.description.type,
-        )
-    }
+  if (!dest) {
+    throw new Error("Cannot determine contract address")
+  }
 
-    const money: TraceMoneyResult = {
-        balanceBefore,
-        sentTotal,
-        totalFees,
-        balanceAfter: endBalance,
-    }
+  const sentTotal = calculateSentTotal(emulatedTx)
+  const totalFees = emulatedTx.totalFees.coins
 
-    return {
-        sender: src,
-        contract: dest,
-        money,
-        emulatedTx,
-        amount,
-        computeInfo,
-    }
+  let computeInfo: ComputeInfo
+  const desc = emulatedTx.description
+  if (desc.type === "generic" || desc.type === "tick-tock") {
+    const computePhase = desc.computePhase
+    computeInfo =
+      computePhase.type === "skipped"
+        ? "skipped"
+        : {
+            success: computePhase.success,
+            exitCode:
+              computePhase.exitCode === 0
+                ? (desc.actionPhase?.resultCode ?? 0)
+                : computePhase.exitCode,
+            vmSteps: computePhase.vmSteps,
+            gasUsed: computePhase.gasUsed,
+            gasFees: computePhase.gasFees,
+          }
+  } else {
+    throw new Error(
+      `TxTracer doesn't support this transaction type. Given type: ${emulatedTx.description.type}`,
+    )
+  }
+
+  const money: TraceMoneyResult = {
+    balanceBefore,
+    sentTotal,
+    totalFees,
+    balanceAfter: endBalance,
+  }
+
+  return {
+    sender: src,
+    contract: dest,
+    money,
+    emulatedTx,
+    amount,
+    computeInfo,
+  }
 }
 
 /**
@@ -864,19 +862,19 @@ export const computeFinalData = (
  * @returns    `{ finalActions, c5 }`
  */
 export const findFinalActions = (res: EmulationResultSuccess) => {
-    const actions = res.actions
-    if (actions === null) {
-        return {finalActions: [], c5: undefined}
-    }
+  const actions = res.actions
+  if (actions === null) {
+    return {finalActions: [], c5: undefined}
+  }
 
-    try {
-        const c5 = Cell.fromBase64(actions)
-        const finalActions = loadOutList(c5.asSlice())
-        return {finalActions, c5}
-    } catch (error) {
-        console.error(`Error decoding actions ${actions}:`, error)
-        return {finalActions: [], c5: undefined}
-    }
+  try {
+    const c5 = Cell.fromBase64(actions)
+    const finalActions = loadOutList(c5.asSlice())
+    return {finalActions, c5}
+  } catch (error) {
+    console.error(`Error decoding actions ${actions}:`, error)
+    return {finalActions: [], c5: undefined}
+  }
 }
 
 /**
@@ -888,13 +886,13 @@ export const findFinalActions = (res: EmulationResultSuccess) => {
  * @returns   Total toncoins sent out by the contract in this tx.
  */
 export const calculateSentTotal = (tx: Transaction): bigint => {
-    let total = 0n
-    for (const msg of tx.outMessages.values()) {
-        if (msg.info.type === "internal") {
-            total += msg.info.value.coins
-        }
+  let total = 0n
+  for (const msg of tx.outMessages.values()) {
+    if (msg.info.type === "internal") {
+      total += msg.info.value.coins
     }
-    return total
+  }
+  return total
 }
 
 /**
@@ -905,4 +903,4 @@ export const calculateSentTotal = (tx: Transaction): bigint => {
  * @returns                     Base64 string of the BOC‑encoded cell.
  */
 export const shardAccountToBase64 = (shardAccountBeforeTx: ShardAccount) =>
-    beginCell().store(storeShardAccount(shardAccountBeforeTx)).endCell().toBoc().toString("base64")
+  beginCell().store(storeShardAccount(shardAccountBeforeTx)).endCell().toBoc().toString("base64")

@@ -35,11 +35,11 @@ console.log(result)
 
 ```ts
 import {
-    RETRACE_MAINNET_NETWORK,
-    RETRACE_TESTNET_NETWORK,
-    findBaseTxByHash,
-    retrace,
-    retraceBaseTx,
+  RETRACE_MAINNET_NETWORK,
+  RETRACE_TESTNET_NETWORK,
+  findBaseTxByHash,
+  retrace,
+  retraceBaseTx,
 } from "@ton/retracer-core"
 import type {RetraceNetworkConfig} from "@ton/retracer-core"
 
@@ -52,10 +52,10 @@ const result1 = await retrace(RETRACE_MAINNET_NETWORK, txHash)
 const result2 = await retrace(RETRACE_TESTNET_NETWORK, txHash)
 
 const customNetwork: RetraceNetworkConfig = {
-    testnet: true,
-    v2BaseUrl: "https://example.com/api/v2",
-    v3BaseUrl: "https://example.com/api/v3",
-    toncenterApiKey: "optional-api-key",
+  testnet: true,
+  v2BaseUrl: "https://example.com/api/v2",
+  v3BaseUrl: "https://example.com/api/v3",
+  toncenterApiKey: "optional-api-key",
 }
 const result3 = await retrace(customNetwork, txHash)
 
@@ -66,7 +66,7 @@ const result3 = await retrace(customNetwork, txHash)
  */
 const baseTx = await findBaseTxByHash(RETRACE_MAINNET_NETWORK, txHash)
 if (baseTx === undefined) {
-    throw new Error("Transaction not found")
+  throw new Error("Transaction not found")
 }
 const result4 = await retraceBaseTx(RETRACE_MAINNET_NETWORK, baseTx)
 ```
@@ -142,7 +142,7 @@ All main types (transactions, blocks, messages, tracing results) are exported fr
 
 ## License
 
-MIT © TON Studio, TON Core
+MIT © TON Core, TON Studio
 
 ## Links
 

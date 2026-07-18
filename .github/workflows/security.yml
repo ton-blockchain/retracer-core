@@ -6,24 +6,24 @@ on:
       - master
     paths:
       - .github/workflows/security.yml
-      - .yarnrc.yml
+      - bunfig.toml
       - package.json
-      - yarn.lock
+      - bun.lock
   push:
     branches:
       - master
     paths:
       - .github/workflows/security.yml
-      - .yarnrc.yml
+      - bunfig.toml
       - package.json
-      - yarn.lock
+      - bun.lock
   workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
-permissions: {}
+permissions: { }
 
 jobs:
   security:
@@ -39,17 +39,8 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Enable Corepack
-        run: corepack enable
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
 
-      - name: Setup Node.js 22.x
-        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
-        with:
-          node-version: 22.x
-          package-manager-cache: false
-
-      - name: Check project packages for deprecated
-        run: yarn npm audit --all --severity moderate
-
-      - name: Check all packages for vulnerabilities
-        run: yarn npm audit --all --recursive --severity high
+      - name: Run Bun audit
+        run: bun audit --audit-level=moderate
