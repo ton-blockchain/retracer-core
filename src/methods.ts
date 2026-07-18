@@ -481,10 +481,21 @@ export const getBlockAccount = async (
     // stateUpdateHashOk will be false for genesis transactions.
     const seqno = mcSeqno > 1 ? mcSeqno - 1 : mcSeqno
 
+    return getShardAccountAtBlock(network, address, seqno)
+}
+
+export const getShardAccountAtBlock = async (
+    network: RetraceNetworkConfig,
+    address: Address,
+    mcSeqno: number,
+): Promise<ShardAccount> => {
     const {result} = await toncenterV2Get<GetShardAccountCellResponse>(
         network,
         "getShardAccountCell",
-        {address: toncenterAddressParam(network, address), seqno},
+        {
+            address: toncenterAddressParam(network, address),
+            seqno: mcSeqno,
+        },
     )
     if (typeof result !== "object" || typeof result.bytes !== "string") {
         throw new Error("getShardAccountCell response is missing result.bytes")
@@ -673,9 +684,11 @@ export const prepareEmulator = async (
     libs: Cell | undefined,
     randSeed: Buffer,
     prevBlocksInfo?: PrevBlocksInfo,
+    options: {ignoreChksig?: boolean} = {},
 ) => {
     const executor = await Executor.create()
     const emulatorVersion = executor.getVersion()
+    const ignoreChksig = options.ignoreChksig ?? false
 
     async function emulate(tx: Transaction, shardAccountBase64: string): Promise<EmulationResult> {
         const inMsg = tx.inMessage
@@ -683,16 +696,25 @@ export const prepareEmulator = async (
         const messageCell =
             extractRawInMessageCell(tx) ?? beginCell().store(storeMessage(inMsg)).endCell()
 
+        return emulateMessage(messageCell, shardAccountBase64, tx.now, tx.lt)
+    }
+
+    async function emulateMessage(
+        message: Cell,
+        shardAccountBase64: string,
+        now: number,
+        lt: bigint,
+    ): Promise<EmulationResult> {
         return executor.runTransaction({
             config: blockConfig,
             libs: libs ?? null,
             verbosity: "full_location_stack_verbose",
             shardAccount: shardAccountBase64,
-            message: messageCell,
-            now: tx.now,
-            lt: tx.lt,
+            message,
+            now,
+            lt,
             randomSeed: randSeed,
-            ignoreChksig: false,
+            ignoreChksig,
             debugEnabled: true,
             prevBlocksInfo,
         })
@@ -712,13 +734,13 @@ export const prepareEmulator = async (
             now: tx.now,
             lt: tx.lt,
             randomSeed: randSeed,
-            ignoreChksig: false,
+            ignoreChksig,
             debugEnabled: true,
             prevBlocksInfo,
         })
     }
 
-    return {emulatorVersion, emulate, emulateTickTock}
+    return {emulatorVersion, emulate, emulateTickTock, emulateMessage}
 }
 
 /**
