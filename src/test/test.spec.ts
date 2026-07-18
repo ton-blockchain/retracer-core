@@ -178,9 +178,7 @@ describe("traces", () => {
                     stateUpdateHashOk: transaction.stateUpdateHashOk,
                     codeHash: transaction.codeCell?.hash().toString("hex"),
                     originalCodeHash: transaction.originalCodeCell?.hash().toString("hex"),
-                    shardAccountBeforeHash: Cell.fromBase64(
-                        transaction.account.shardAccountBefore,
-                    )
+                    shardAccountBeforeHash: Cell.fromBase64(transaction.account.shardAccountBefore)
                         .hash()
                         .toString("hex"),
                     shardAccountAfterHash: Cell.fromBase64(transaction.account.shardAccountAfter)
@@ -276,9 +274,7 @@ function comparableTraceResult(result: TraceResult) {
             opcode: result.inMsg.opcode,
         },
         account: {
-            beforeHash: Cell.fromBase64(result.account.shardAccountBefore)
-                .hash()
-                .toString("hex"),
+            beforeHash: Cell.fromBase64(result.account.shardAccountBefore).hash().toString("hex"),
             afterHash: Cell.fromBase64(result.account.shardAccountAfter).hash().toString("hex"),
         },
         money: result.money,

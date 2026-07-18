@@ -82,10 +82,10 @@ import {toncenterHashToBuffer, toncenterV2Get, toncenterV3Get} from "./networks"
  *                   compute‑phase info, `c5`, action list and raw VM log
  *                 5. version of the sandbox executor used for emulation
  *
- * @throws Error   If any network lookup fails; if the corresponding shard‑ /
- *                 master‑block cannot be found; if deterministic replay
- *                 diverges (TVM returns non‑success); or if state‑hash
- *                 mismatch is detected after replay.
+ * @throws Error   If a network lookup fails; if the corresponding shard- or
+ *                 masterchain block cannot be found; if a required library or
+ *                 block context cannot be loaded; or if deterministic replay
+ *                 fails before the target transaction can be reproduced.
  */
 export const retrace = async (
     network: RetraceNetworkConfig,
@@ -201,6 +201,27 @@ class MissingLibraryError extends Error {
 const DEFAULT_RAW_MESSAGE_MAX_TRANSACTIONS = 128
 const MAX_UINT32 = 4_294_967_295
 
+/**
+ * Reproduce every transaction in the complete message trace containing `txHash`.
+ *
+ * The supplied hash may identify any transaction in the trace. Transactions are replayed
+ * sequentially in Toncenter's canonical `transactions_order` when available, with logical-time
+ * and trace-tree fallbacks for compatible endpoints that omit it. Per-account states are carried
+ * forward between transactions in the same block.
+ *
+ * Missing public libraries are loaded automatically and cause the replay to restart with the
+ * expanded library set. Use {@link RetraceOptions.additionalLibs} for libraries that cannot be
+ * resolved through the configured endpoint.
+ *
+ * @param network Toncenter-compatible network configuration.
+ * @param txHash  Hex hash of any transaction in the trace.
+ * @param options Additional libraries and optional source-map data.
+ * @returns       The normalized root hash, one {@link TraceResult} per transaction, an aggregate
+ *                state-update verification flag, and the sandbox executor version.
+ * @throws Error  If the trace is missing, incomplete or empty; if it references an unavailable
+ *                transaction; if required block context or libraries cannot be loaded; or if
+ *                deterministic transaction emulation fails.
+ */
 export const retraceTrace = async (
     network: RetraceNetworkConfig,
     txHash: string,
@@ -1108,11 +1129,15 @@ async function buildRawMessageAccountStateOverrides(
         const shardAccountBoc = override.shardAccountBoc?.trim()
         const baseShardAccount =
             shardAccountBoc !== undefined && shardAccountBoc.length > 0
-            ? loadShardAccount(
-                  parseBocCell(shardAccountBoc, "Account state override").asSlice(),
-              )
-            : await getShardAccountAtBlock(network, address, mcSeqno)
-        const shardAccount = applyRawMessageAccountStateOverride(address, baseShardAccount, override)
+                ? loadShardAccount(
+                      parseBocCell(shardAccountBoc, "Account state override").asSlice(),
+                  )
+                : await getShardAccountAtBlock(network, address, mcSeqno)
+        const shardAccount = applyRawMessageAccountStateOverride(
+            address,
+            baseShardAccount,
+            override,
+        )
         const shardAccountCell = beginCell().store(storeShardAccount(shardAccount)).endCell()
         accountStates.set(address.toString(), {
             shardAccountBase64: shardAccountCell.toBoc().toString("base64"),
@@ -1141,7 +1166,8 @@ function applyRawMessageAccountStateOverride(
         override.balance !== undefined ||
         override.state !== undefined ||
         storageLastTransactionLt !== undefined
-    const baseAccount = shardAccount.account ?? (accountRequired ? createEmptyAccount(address) : null)
+    const baseAccount =
+        shardAccount.account ?? (accountRequired ? createEmptyAccount(address) : null)
 
     const nextShardAccount: ShardAccount = {
         account: baseAccount,
@@ -1164,7 +1190,10 @@ function applyRawMessageAccountStateOverride(
                               coins: balance,
                           },
                 state: override.state
-                    ? applyRawMessageAccountStateDataOverride(baseAccount.storage.state, override.state)
+                    ? applyRawMessageAccountStateDataOverride(
+                          baseAccount.storage.state,
+                          override.state,
+                      )
                     : baseAccount.storage.state,
             },
         }

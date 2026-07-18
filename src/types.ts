@@ -20,6 +20,10 @@ export interface RetraceNetworkConfig {
 }
 
 export interface RetraceOptions {
+    /**
+     * Additional TVM libraries as `[hash, code]` pairs. Use this for libraries
+     * that are not available from the configured Toncenter-compatible endpoint.
+     */
     additionalLibs?: [bigint, Cell][]
     /**
      * Optional Tolk compiler source map. Provide this to include source-level
@@ -265,6 +269,11 @@ export interface Trace {
     is_incomplete: boolean
     trace: TraceNode
     transactions: Record<string, Transaction>
+    /**
+     * Canonical transaction processing order returned by Toncenter. Compatible
+     * endpoints may omit it, in which case retrace uses logical time and the
+     * trace tree as fallbacks.
+     */
     transactions_order?: readonly string[]
     trace_info: {
         transactions: number
@@ -618,12 +627,32 @@ export interface TraceResult {
     }
 }
 
+/**
+ * Result of replaying a complete message trace with `retraceTrace`.
+ */
 export interface TraceReplayResult {
+    /**
+     * Normalized lowercase hex hash of the trace root, without a `0x` prefix.
+     * It can differ from the input hash when a child transaction was requested.
+     */
     rootTxHash: string
+    /**
+     * Per-transaction replay results keyed by normalized lowercase hex hash.
+     * Entries are populated in replay order.
+     */
     transactions: Record<string, TraceResult>
+    /**
+     * True only when every transaction produced the same state update as its
+     * on-chain counterpart. Replayed state changes are not authoritative when false.
+     */
     stateUpdateHashOk: boolean
+    /**
+     * TON Sandbox executor version used for every transaction in this replay.
+     */
     emulatorVersion: {
+        /** Executor source commit hash. */
         commitHash: string
+        /** Executor source commit date. */
         commitDate: string
     }
 }
