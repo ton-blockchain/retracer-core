@@ -1,5 +1,6 @@
 import {describe, expect, it} from "vitest"
-import {retrace, retraceBaseTx} from "../runner"
+import {Cell} from "@ton/core"
+import {retrace, retraceBaseTx, retraceTrace} from "../runner"
 import {findBaseTxByHash} from "../methods"
 import {
     RETRACE_MAINNET_NETWORK,
@@ -160,6 +161,54 @@ describe("transactions", () => {
     )
 })
 
+describe("traces", () => {
+    it.each([
+        "338d28c113574ceeecd1718296293a637a800fdeed30d12ce2ce8c67dad629b2",
+        "ef98e0988b8e92d8fd2c88807c3431a600b50a1ab3299bc348e239de49ee4a67",
+    ])(
+        "should match independent retraces for every transaction in trace %s",
+        async traceTxHash => {
+            const result = await retraceTrace(MAINNET_NETWORK, traceTxHash)
+
+            expect({
+                rootTxHash: result.rootTxHash,
+                stateUpdateHashOk: result.stateUpdateHashOk,
+                transactions: Object.entries(result.transactions).map(([hash, transaction]) => ({
+                    hash,
+                    stateUpdateHashOk: transaction.stateUpdateHashOk,
+                    codeHash: transaction.codeCell?.hash().toString("hex"),
+                    originalCodeHash: transaction.originalCodeCell?.hash().toString("hex"),
+                    shardAccountBeforeHash: Cell.fromBase64(
+                        transaction.account.shardAccountBefore,
+                    )
+                        .hash()
+                        .toString("hex"),
+                    shardAccountAfterHash: Cell.fromBase64(transaction.account.shardAccountAfter)
+                        .hash()
+                        .toString("hex"),
+                    sender: transaction.inMsg.sender?.toString(),
+                    contract: transaction.inMsg.contract.toString(),
+                    opcode: transaction.inMsg.opcode,
+                    money: transaction.money,
+                    lt: transaction.emulatedTx.lt,
+                    utime: transaction.emulatedTx.utime,
+                    computeInfo: transaction.emulatedTx.computeInfo,
+                    actionCount: transaction.emulatedTx.actions.length,
+                    c5Hash: transaction.emulatedTx.c5?.hash().toString("hex"),
+                })),
+            }).toMatchSnapshot()
+
+            for (const [hash, traceTransaction] of Object.entries(result.transactions)) {
+                const independentTransaction = await retrace(MAINNET_NETWORK, hash)
+                expect(comparableTraceResult(traceTransaction)).toEqual(
+                    comparableTraceResult(independentTransaction),
+                )
+            }
+        },
+        DEFAULT_TIMEOUT,
+    )
+})
+
 describe("tick-tock transactions", () => {
     it(
         "should return correct information for tick transaction on elector",
@@ -213,4 +262,41 @@ function checkResult(res: TraceResult, expectedOk: boolean = true): void {
     expect(res.emulatedTx.c5?.toString()).toMatchSnapshot()
     expect(res.emulatedTx.raw).toMatchSnapshot()
     expect(res.money).toMatchSnapshot()
+}
+
+function comparableTraceResult(result: TraceResult) {
+    return {
+        stateUpdateHashOk: result.stateUpdateHashOk,
+        codeHash: result.codeCell?.hash().toString("hex"),
+        originalCodeHash: result.originalCodeCell?.hash().toString("hex"),
+        inMsg: {
+            sender: result.inMsg.sender?.toString(),
+            contract: result.inMsg.contract.toString(),
+            amount: result.inMsg.amount,
+            opcode: result.inMsg.opcode,
+        },
+        account: {
+            beforeHash: Cell.fromBase64(result.account.shardAccountBefore)
+                .hash()
+                .toString("hex"),
+            afterHash: Cell.fromBase64(result.account.shardAccountAfter).hash().toString("hex"),
+        },
+        money: result.money,
+        emulatedTx: {
+            raw: result.emulatedTx.raw,
+            utime: result.emulatedTx.utime,
+            lt: result.emulatedTx.lt,
+            computeInfo: result.emulatedTx.computeInfo,
+            executorLogs: normalizeExecutorLogs(result.emulatedTx.executorLogs),
+            c5Hash: result.emulatedTx.c5?.hash().toString("hex"),
+            vmLogs: result.emulatedTx.vmLogs,
+        },
+        emulatorVersion: result.emulatorVersion,
+    }
+}
+
+function normalizeExecutorLogs(value: string): string {
+    return value
+        .replace(/\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d+]/g, "[timestamp]")
+        .replace(/time=\d+\.\d+s, cpu_time=\d+\.\d+/g, "time=[duration], cpu_time=[duration]")
 }

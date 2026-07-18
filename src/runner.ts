@@ -92,74 +92,49 @@ export const retrace = async (
     txLink: string,
     options: RetraceOptions = {},
 ): Promise<TraceResult> => {
-    const additionalLibs = options.additionalLibs ?? []
     const baseTx = await findBaseTxByHash(network, txLink)
     if (baseTx === undefined) {
         throw new Error("Cannot find transaction info")
     }
-    const result = await retraceBaseTx(network, baseTx, additionalLibs, options.sourceMap)
-    if (result.emulatedTx.computeInfo === "skipped") {
-        return result
-    }
+    const dynamicLibs = [...(options.additionalLibs ?? [])]
+    const loadedDynamicLibraries = new Set(dynamicLibs.map(([hash]) => hash.toString(16)))
 
-    if (result.emulatedTx.computeInfo.exitCode === 0) {
-        // fast path
-        return result
-    }
-
-    if (result.emulatedTx.computeInfo.exitCode === 9) {
-        // This can be both a simple cell underflow and failed to load a library cell.
-        // Parse vmLogs to find out.
-
-        // Example logs:
-        //
-        // stack: [ ... C{B5EE9C72010101010023000842029468B29F43AC803FC9F621953FDD069A432E4CD1D9A56B9C299B587FE6898FAB} ]
-        // code cell hash: 4F5F4CE417F91358B532A9670A09D20AC7E01850E9B704A4DF1CC5373EE6EDE4 offset: 887
-        // execute CTOS
-        // handling exception code 9: failed to load library cell
-        // default exception handler, terminating vm with exit code 9
-
-        const lines = logs.parse(result.emulatedTx.vmLogs)
-
-        const exceptionHandlerLine = lines.at(-2)
-        const exceptionLine = lines.at(-3)
-        const ctosLine = lines.at(-4)
-        const stackLine = lines.at(-6)
-        if (
-            exceptionHandlerLine?.$ === "VmExceptionHandler" &&
-            exceptionLine?.$ === "VmException" &&
-            exceptionLine.message === "failed to load library cell" &&
-            ctosLine?.$ === "VmExecute" &&
-            ctosLine.instr === "CTOS" &&
-            stackLine?.$ === "VmStack"
-        ) {
-            // So we find out that the transaction failed to load a library cell.
-            // Stack before CTOS will contain the library cell as the top element.
-            const topElement = stackLine.stack.at(-1)
-            if (topElement?.$ === "Cell") {
-                const libraryResult = await tryLoadAsLibrary(topElement.boc, network)
-                if (libraryResult === undefined) {
-                    // Either the library cell is not an exotic library cell, or we cannot load it.
-                    return result
-                }
-
-                // Now we have the library content and hash, so we try again with this library.
-                const {libHashHex, actualCode} = libraryResult
-                const additionalLib: [bigint, Cell] = [BigInt(`0x${libHashHex}`), actualCode]
-                return retrace(network, txLink, {
-                    additionalLibs: [...additionalLibs, additionalLib],
-                    sourceMap: options.sourceMap,
-                })
+    for (;;) {
+        let result: TraceResult
+        try {
+            result = await retraceBaseTx(network, baseTx, dynamicLibs, options.sourceMap)
+        } catch (error) {
+            if (!(error instanceof MissingLibraryError)) {
+                throw error
             }
-        }
-    }
 
-    return result
+            const [hash] = error.library
+            const hashKey = hash.toString(16)
+            if (loadedDynamicLibraries.has(hashKey)) {
+                throw error
+            }
+            dynamicLibs.push(error.library)
+            loadedDynamicLibraries.add(hashKey)
+            continue
+        }
+
+        const library = await tryLoadMissingLibraryFromResult(result, network)
+        if (!library) {
+            return result
+        }
+
+        const [hash] = library
+        const hashKey = hash.toString(16)
+        if (loadedDynamicLibraries.has(hashKey)) {
+            throw new Error(`Library ${hashKey} is still unavailable after loading`)
+        }
+        dynamicLibs.push(library)
+        loadedDynamicLibraries.add(hashKey)
+    }
 }
 
 interface TraceReplayTransaction {
     hash: string
-    apiTransaction: ToncenterTransaction
     baseTx: BaseTxInfo
 }
 
@@ -216,7 +191,15 @@ interface GetMasterchainInfoResponse {
     }
 }
 
+class MissingLibraryError extends Error {
+    public constructor(public readonly library: [bigint, Cell]) {
+        super(`Missing library ${library[0].toString(16)}`)
+        this.name = "MissingLibraryError"
+    }
+}
+
 const DEFAULT_RAW_MESSAGE_MAX_TRANSACTIONS = 128
+const MAX_UINT32 = 4_294_967_295
 
 export const retraceTrace = async (
     network: RetraceNetworkConfig,
@@ -224,6 +207,9 @@ export const retraceTrace = async (
     options: RetraceOptions = {},
 ): Promise<TraceReplayResult> => {
     const trace = await loadTraceByTransactionHash(network, txHash)
+    if (trace.is_incomplete) {
+        throw new Error("Cannot replay an incomplete trace")
+    }
     const traceTransactions = orderedTraceTransactions(trace)
     if (traceTransactions.length === 0) {
         throw new Error("Trace does not contain transactions")
@@ -232,7 +218,7 @@ export const retraceTrace = async (
     const dynamicLibs = [...(options.additionalLibs ?? [])]
     const loadedDynamicLibraries = new Set(dynamicLibs.map(([hash]) => hash.toString(16)))
 
-    for (let attempt = 0; attempt < 5; attempt += 1) {
+    for (;;) {
         const caches: TraceReplayCaches = {
             rawTransactions: new Map(),
             blockContexts: new Map(),
@@ -242,21 +228,38 @@ export const retraceTrace = async (
         let missingLibrary: [bigint, Cell] | undefined
 
         for (const traceTransaction of traceTransactions) {
-            const result = await replayTraceTransaction(network, traceTransaction, dynamicLibs, {
-                sourceMap: options.sourceMap,
-                caches,
-            })
+            let result: TraceResult
+            try {
+                result = await replayTraceTransaction(network, traceTransaction, dynamicLibs, {
+                    sourceMap: options.sourceMap,
+                    caches,
+                })
+            } catch (error) {
+                if (!(error instanceof MissingLibraryError)) {
+                    throw error
+                }
+
+                const [hash] = error.library
+                const hashKey = hash.toString(16)
+                if (loadedDynamicLibraries.has(hashKey)) {
+                    throw error
+                }
+                missingLibrary = error.library
+                loadedDynamicLibraries.add(hashKey)
+                break
+            }
             results[traceTransaction.hash] = result
 
             const library = await tryLoadMissingLibraryFromResult(result, network)
             if (library) {
                 const [hash] = library
                 const hashKey = hash.toString(16)
-                if (!loadedDynamicLibraries.has(hashKey)) {
-                    missingLibrary = library
-                    loadedDynamicLibraries.add(hashKey)
-                    break
+                if (loadedDynamicLibraries.has(hashKey)) {
+                    throw new Error(`Library ${hashKey} is still unavailable after loading`)
                 }
+                missingLibrary = library
+                loadedDynamicLibraries.add(hashKey)
+                break
             }
         }
 
@@ -274,8 +277,6 @@ export const retraceTrace = async (
             emulatorVersion: firstResult.emulatorVersion,
         }
     }
-
-    throw new Error("Trace replay failed to recover missing libraries")
 }
 
 export const emulateRawMessage = async (
@@ -287,7 +288,7 @@ export const emulateRawMessage = async (
     const dynamicLibs = [...(options.additionalLibs ?? [])]
     const loadedDynamicLibraries = new Set(dynamicLibs.map(([hash]) => hash.toString(16)))
 
-    for (let attempt = 0; attempt < 5; attempt += 1) {
+    for (;;) {
         const result = await emulateRawMessageCascade(network, messageCell, {
             ...options,
             additionalLibs: dynamicLibs,
@@ -302,11 +303,12 @@ export const emulateRawMessage = async (
 
             const [hash] = library
             const hashKey = hash.toString(16)
-            if (!loadedDynamicLibraries.has(hashKey)) {
-                missingLibrary = library
-                loadedDynamicLibraries.add(hashKey)
-                break
+            if (loadedDynamicLibraries.has(hashKey)) {
+                throw new Error(`Library ${hashKey} is still unavailable after loading`)
             }
+            missingLibrary = library
+            loadedDynamicLibraries.add(hashKey)
+            break
         }
 
         if (missingLibrary) {
@@ -316,8 +318,6 @@ export const emulateRawMessage = async (
 
         return result
     }
-
-    throw new Error("Raw message emulation failed to recover missing libraries")
 }
 
 interface RawMessageQueueItem {
@@ -363,6 +363,7 @@ async function emulateRawMessageCascade(
     )
     const queue: RawMessageQueueItem[] = [{message, messageCell}]
     const emulatedTransactions: RawMessageEmulatedTransaction[] = []
+    let nextTransactionLt = blockContext.lt
 
     while (queue.length > 0) {
         if (emulatedTransactions.length >= maxTransactions) {
@@ -407,7 +408,10 @@ async function emulateRawMessageCascade(
             prevBlocksInfo,
             {ignoreChksig: options.ignoreChksig},
         )
-        const txLt = blockContext.lt + BigInt(emulatedTransactions.length)
+        const incomingCreatedLt =
+            item.message.info.type === "internal" ? item.message.info.createdLt : 0n
+        const txLt =
+            nextTransactionLt > incomingCreatedLt ? nextTransactionLt : incomingCreatedLt + 1n
         const txRes = await emulateMessage(
             item.messageCell,
             accountState.shardAccountBase64,
@@ -419,6 +423,7 @@ async function emulateRawMessageCascade(
         }
 
         const emulatedTx = loadTransaction(Cell.fromBase64(txRes.result.transaction).asSlice())
+        nextTransactionLt = emulatedTx.lt + 1n
         const hash = transactionHashHex(emulatedTx)
         const emulation: TraceReplayEmulation = {
             emulatorVersion,
@@ -567,17 +572,12 @@ export const retraceBaseTx = async (
     const initialShardAccountBase64 = shardAccountToBase64(shardAccountBeforeTx)
     const balance = shardAccountBeforeTx.account?.storage.balance.coins ?? 0n
 
-    // on fetch failure (e.g. genesis blocks are not available via API)
-    // emulate without prev_blocks_info, as before
     const fetchPrevBlocksInfo = async (with100: boolean): Promise<PrevBlocksInfo | undefined> => {
         if (mcSeqno <= 1) {
             return undefined
         }
 
-        return getPrevBlocksInfo(network, mcSeqno, {with100}).catch((error: unknown) => {
-            console.error("Cannot get prev blocks info", error)
-            return undefined
-        })
+        return getPrevBlocksInfo(network, mcSeqno, {with100})
     }
 
     const runEmulation = async (prevBlocksInfo?: PrevBlocksInfo) => {
@@ -604,6 +604,12 @@ export const retraceBaseTx = async (
             prevTxsInBlock,
             emulateAny,
             initialShardAccountBase64,
+            async result => {
+                const library = await tryLoadMissingLibraryFromVmLogs(result.vmLog, network)
+                if (library) {
+                    throw new MissingLibraryError(library)
+                }
+            },
         )
         const shardAccountBeforeTargetBase64 = shardAccountBase64
 
@@ -726,12 +732,13 @@ function orderedTraceTransactions(trace: TraceData["traces"][number]): TraceRepl
     }
 
     const orderedHashes: string[] = []
+    const seenHashes: Set<string> = new Set()
     const pushHash = (hash: string | undefined): void => {
         if (hash === undefined || hash.length === 0) return
         const normalized = normalizeTraceHash(hash)
-        if (!orderedHashes.includes(normalized)) {
-            orderedHashes.push(normalized)
-        }
+        if (seenHashes.has(normalized)) return
+        seenHashes.add(normalized)
+        orderedHashes.push(normalized)
     }
 
     const visitNode = (node: TraceData["traces"][number]["trace"] | undefined): void => {
@@ -742,26 +749,23 @@ function orderedTraceTransactions(trace: TraceData["traces"][number]): TraceRepl
         }
     }
 
-    visitNode(trace.trace)
-    for (const hash of trace.transactions_order) {
+    for (const hash of trace.transactions_order ?? []) {
         pushHash(hash)
     }
     for (const transaction of Object.values(trace.transactions).sort(compareApiTransactionLt)) {
         pushHash(transaction.hash)
     }
+    visitNode(trace.trace)
 
-    return orderedHashes.flatMap(hash => {
+    return orderedHashes.map(hash => {
         const transaction = transactionsByHash.get(hash)
         if (!transaction) {
-            return []
+            throw new Error(`Trace references unavailable transaction ${hash}`)
         }
-        return [
-            {
-                hash,
-                apiTransaction: transaction,
-                baseTx: baseTxFromTraceTransaction(transaction),
-            },
-        ]
+        return {
+            hash,
+            baseTx: baseTxFromTraceTransaction(transaction),
+        }
     })
 }
 
@@ -822,6 +826,12 @@ async function replayTraceTransaction(
             replayRange.prevTxs,
             emulateAny,
             initialShardAccountBase64,
+            async result => {
+                const library = await tryLoadMissingLibraryFromVmLogs(result.vmLog, network)
+                if (library) {
+                    throw new MissingLibraryError(library)
+                }
+            },
         )
         const shardAccountBeforeTargetBase64 = shardAccountBase64
         const txRes = await emulateAny(replayRange.targetTx, shardAccountBase64)
@@ -866,15 +876,19 @@ async function replayTraceTransaction(
         sourceMap: options.sourceMap,
     })
 
-    const shardAccountAfter = loadShardAccount(
-        Cell.fromBase64(result.account.shardAccountAfter).asSlice(),
-    )
-    options.caches.accountStates.set(accountKey, {
-        blockKey: blockContext.blockKey,
-        lt: replayRange.targetTx.lt,
-        balance: shardAccountAfter.account?.storage.balance.coins ?? 0n,
-        shardAccountBase64: result.account.shardAccountAfter,
-    })
+    if (result.stateUpdateHashOk) {
+        const shardAccountAfter = loadShardAccount(
+            Cell.fromBase64(result.account.shardAccountAfter).asSlice(),
+        )
+        options.caches.accountStates.set(accountKey, {
+            blockKey: blockContext.blockKey,
+            lt: replayRange.targetTx.lt,
+            balance: shardAccountAfter.account?.storage.balance.coins ?? 0n,
+            shardAccountBase64: result.account.shardAccountAfter,
+        })
+    } else {
+        options.caches.accountStates.delete(accountKey)
+    }
 
     return result
 }
@@ -993,7 +1007,7 @@ async function loadBlockContext(
 
     const mcSeqno = block.masterchain_block_ref.seqno
     const blockConfig = await getBlockConfig(network, mcSeqno)
-    const randSeed = Buffer.from(block.rand_seed, "base64")
+    const randSeed = blockRandSeed(block)
     const prevBlocksInfo: Map<string, Promise<PrevBlocksInfo | undefined>> = new Map()
     const getCachedPrevBlocksInfo = async (
         with100: boolean,
@@ -1004,10 +1018,7 @@ async function loadBlockContext(
         const key = with100 ? "full" : "short"
         let request = prevBlocksInfo.get(key)
         if (!request) {
-            request = getPrevBlocksInfo(network, mcSeqno, {with100}).catch((error: unknown) => {
-                console.error("Cannot get prev blocks info", error)
-                return undefined
-            })
+            request = getPrevBlocksInfo(network, mcSeqno, {with100})
             prevBlocksInfo.set(key, request)
         }
         return request
@@ -1322,10 +1333,7 @@ async function loadRawMessageBlockContext(
         const key = with100 ? "full" : "short"
         let request = prevBlocksInfo.get(key)
         if (!request) {
-            request = getPrevBlocksInfo(network, mcSeqno, {with100}).catch((error: unknown) => {
-                console.error("Cannot get prev blocks info", error)
-                return undefined
-            })
+            request = getPrevBlocksInfo(network, mcSeqno, {with100})
             prevBlocksInfo.set(key, request)
         }
         return request
@@ -1335,8 +1343,8 @@ async function loadRawMessageBlockContext(
         mcSeqno,
         blockConfig,
         randSeed: blockRandSeed(block),
-        now: options.now ?? blockUnixTime(block),
-        lt: options.lt ?? blockNextLt(block),
+        now: rawMessageUnixTime(block, options.now),
+        lt: rawMessageStartLt(block, options.lt),
         getPrevBlocksInfo: getCachedPrevBlocksInfo,
     }
 }
@@ -1344,23 +1352,50 @@ async function loadRawMessageBlockContext(
 function blockRandSeed(block: Block): Buffer {
     const value = block.rand_seed.trim()
     if (!value) {
-        return Buffer.alloc(32)
+        throw new Error("Block rand_seed is missing")
     }
     const buffer = Buffer.from(value.replace(/-/g, "+").replace(/_/g, "/"), "base64")
-    return buffer.length === 32 ? buffer : Buffer.alloc(32)
+    if (buffer.length !== 32) {
+        throw new Error("Block rand_seed must contain 32 bytes")
+    }
+    return buffer
 }
 
 function blockUnixTime(block: Block): number {
     const value = Number(block.gen_utime)
-    return Number.isFinite(value) ? value : Math.floor(Date.now() / 1000)
+    if (!Number.isSafeInteger(value) || value < 0 || value > MAX_UINT32) {
+        throw new Error("Block gen_utime must be a valid uint32")
+    }
+    return value
 }
 
 function blockNextLt(block: Block): bigint {
+    let value: bigint
     try {
-        return BigInt(block.end_lt) + 1n
+        value = BigInt(block.end_lt)
     } catch {
-        return 0n
+        throw new Error("Block end_lt must be a non-negative integer")
     }
+    if (value < 0n) {
+        throw new Error("Block end_lt must be a non-negative integer")
+    }
+    return value + 1n
+}
+
+function rawMessageUnixTime(block: Block, override: number | undefined): number {
+    const value = override ?? blockUnixTime(block)
+    if (!Number.isSafeInteger(value) || value < 0 || value > MAX_UINT32) {
+        throw new Error("Message emulation time must be a valid uint32")
+    }
+    return value
+}
+
+function rawMessageStartLt(block: Block, override: bigint | undefined): bigint {
+    const value = override ?? blockNextLt(block)
+    if (typeof value !== "bigint" || value < 0n) {
+        throw new Error("Message emulation lt must be a non-negative bigint")
+    }
+    return value
 }
 
 function resolveRawMessageMaxTransactions(value: number | undefined): number {
@@ -1841,7 +1876,19 @@ async function tryLoadMissingLibraryFromResult(
         return undefined
     }
 
-    const lines = logs.parse(result.emulatedTx.vmLogs)
+    return tryLoadMissingLibraryFromVmLogs(result.emulatedTx.vmLogs, network)
+}
+
+async function tryLoadMissingLibraryFromVmLogs(
+    vmLogs: string,
+    network: RetraceNetworkConfig,
+): Promise<[bigint, Cell] | undefined> {
+    let lines: ReturnType<typeof logs.parse>
+    try {
+        lines = logs.parse(vmLogs)
+    } catch {
+        return undefined
+    }
     const exceptionHandlerLine = lines.at(-2)
     const exceptionLine = lines.at(-3)
     const ctosLine = lines.at(-4)

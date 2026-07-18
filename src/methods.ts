@@ -318,6 +318,7 @@ export interface PrevBlocksUsage {
  */
 export const detectPrevBlocksUsage = (roots: (Cell | undefined)[]): PrevBlocksUsage => {
     const found: Set<string> = new Set()
+    let inspectionFailed = false
     for (const root of roots) {
         if (!root) {
             continue
@@ -325,11 +326,12 @@ export const detectPrevBlocksUsage = (roots: (Cell | undefined)[]): PrevBlocksUs
         try {
             collectInstructionNames(runtime.decompileCell(root), found)
         } catch {
-            // not disassemblable — assume it does not use prev_blocks_info
+            inspectionFailed = true
         }
     }
 
-    const with100 = found.has("PREVMCBLOCKS_100") || found.has("PREVBLOCKSINFOTUPLE")
+    const with100 =
+        inspectionFailed || found.has("PREVMCBLOCKS_100") || found.has("PREVBLOCKSINFOTUPLE")
     const needed = with100 || found.has("PREVMCBLOCKS") || found.has("PREVKEYBLOCK")
     return {needed, with100}
 }
@@ -642,6 +644,7 @@ export const emulatePreviousTransactions = async (
     prevTxsInBlock: Transaction[],
     emulate: (tx: Transaction, shardAccountStr: string) => Promise<EmulationResult>,
     shardAccountBase64: string,
+    onEmulated?: (result: EmulationResultSuccess) => Promise<void>,
 ): Promise<{prevBalance: bigint; shardAccountBase64: string}> => {
     if (prevTxsInBlock.length === 0) {
         return {prevBalance, shardAccountBase64}
@@ -654,6 +657,8 @@ export const emulatePreviousTransactions = async (
                 `Transaction failed for lt: ${tx.lt}, logs: ${res.logs}, debugLogs: ${res.debugLogs}`,
             )
         }
+
+        await onEmulated?.(res.result)
 
         // since we change state at each transaction we need to save new state as current one
         shardAccountBase64 = res.result.shardAccount

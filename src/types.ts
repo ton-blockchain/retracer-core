@@ -265,7 +265,7 @@ export interface Trace {
     is_incomplete: boolean
     trace: TraceNode
     transactions: Record<string, Transaction>
-    transactions_order: readonly string[]
+    transactions_order?: readonly string[]
     trace_info: {
         transactions: number
         messages: number
