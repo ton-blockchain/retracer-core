@@ -322,9 +322,10 @@ export const emulateRawMessage = async (
   const messageCell = rawMessage instanceof Cell ? rawMessage : parseRawMessageCell(rawMessage)
   const dynamicLibs = [...(options.additionalLibs ?? [])]
   const loadedDynamicLibraries = new Set(dynamicLibs.map(([hash]) => hash.toString(16)))
+  const mcSeqno = await resolveEmulationMcSeqno(network, options.mcSeqno)
 
   for (;;) {
-    const result = await emulateRawMessageCascade(network, messageCell, {
+    const result = await emulateRawMessageCascade(network, messageCell, mcSeqno, {
       ...options,
       additionalLibs: dynamicLibs,
     })
@@ -382,6 +383,7 @@ interface RawMessageEmulatedTransaction {
 async function emulateRawMessageCascade(
   network: RetraceNetworkConfig,
   messageCell: Cell,
+  mcSeqno: number,
   options: EmulateRawMessageOptions,
 ): Promise<EmulateRawMessageResult> {
   const message = loadMessage(messageCell.asSlice())
@@ -390,7 +392,6 @@ async function emulateRawMessageCascade(
     throw new Error("Raw message destination must be an account address")
   }
 
-  const mcSeqno = await resolveEmulationMcSeqno(network, options.mcSeqno)
   const blockContext = await loadRawMessageBlockContext(network, mcSeqno, options)
   const maxTransactions = resolveRawMessageMaxTransactions(options.maxTransactions)
   const accountStates = await buildRawMessageAccountStateOverrides(
@@ -443,7 +444,7 @@ async function emulateRawMessageCascade(
       libs,
       blockContext.randSeed,
       prevBlocksInfo,
-      {ignoreChksig: options.ignoreChksig},
+      {ignoreChksig: emulatedTransactions.length === 0 ? options.ignoreChksig : false},
     )
     const incomingCreatedLt =
       item.message.info.type === "internal" ? item.message.info.createdLt : 0n
@@ -1670,13 +1671,14 @@ function rawMessageApiMessage(message: Message, messageCell: Cell): EmulatedMess
   if (message.info.type === "internal") {
     return {
       ...common,
-      source: message.info.src.toString(),
-      destination: message.info.dest.toString(),
+      source: message.info.src.toRawString(),
+      destination: message.info.dest.toRawString(),
       value: message.info.value.coins.toString(),
       value_extra_currencies: extraCurrenciesToApi(message.info.value.other),
       fwd_fee: message.info.forwardFee.toString(),
-      ihr_fee: message.info.ihrFee.toString(),
-      import_fee: "0",
+      ihr_fee: "0",
+      extra_flags: message.info.ihrFee.toString(),
+      import_fee: null,
       created_lt: message.info.createdLt.toString(),
       created_at: message.info.createdAt.toString(),
       ihr_disabled: message.info.ihrDisabled,
@@ -1689,34 +1691,36 @@ function rawMessageApiMessage(message: Message, messageCell: Cell): EmulatedMess
     return {
       ...common,
       source: null,
-      destination: message.info.dest.toString(),
-      value: "0",
+      destination: message.info.dest.toRawString(),
+      value: null,
       value_extra_currencies: {},
-      fwd_fee: "0",
-      ihr_fee: "0",
+      fwd_fee: null,
+      ihr_fee: null,
+      extra_flags: null,
       import_fee: message.info.importFee.toString(),
-      created_lt: "0",
+      created_lt: null,
       created_at: null,
-      ihr_disabled: true,
-      bounce: false,
-      bounced: false,
+      ihr_disabled: null,
+      bounce: null,
+      bounced: null,
     }
   }
 
   return {
     ...common,
-    source: message.info.src.toString(),
+    source: message.info.src.toRawString(),
     destination: null,
-    value: "0",
+    value: null,
     value_extra_currencies: {},
-    fwd_fee: "0",
-    ihr_fee: "0",
+    fwd_fee: null,
+    ihr_fee: null,
+    extra_flags: null,
     import_fee: null,
     created_lt: message.info.createdLt.toString(),
     created_at: message.info.createdAt.toString(),
-    ihr_disabled: true,
-    bounce: false,
-    bounced: false,
+    ihr_disabled: null,
+    bounce: null,
+    bounced: null,
   }
 }
 
@@ -1802,7 +1806,7 @@ function bouncePhaseToApi(
   }
 
   if (phase.type === "negative-funds") {
-    return {type: phase.type}
+    return {type: "negfunds"}
   }
 
   const messageSize = {
@@ -1811,7 +1815,7 @@ function bouncePhaseToApi(
   }
   if (phase.type === "no-funds") {
     return {
-      type: phase.type,
+      type: "nofunds",
       msg_size: messageSize,
       req_fwd_fees: phase.requiredForwardFees.toString(),
     }
@@ -1852,7 +1856,7 @@ function computePhaseToApi(
   if (phase.type === "skipped") {
     return {
       skipped: true,
-      reason: phase.reason,
+      reason: phase.reason.replace("-", "_"),
     }
   }
 

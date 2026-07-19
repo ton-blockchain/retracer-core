@@ -47,7 +47,7 @@ export interface EmulateRawMessageOptions extends RetraceOptions {
    */
   lt?: bigint
   /**
-   * Ask TVM to ignore CHKSIG/CHKSIGNU signature checks during emulation.
+   * Ask TVM to ignore CHKSIG/CHKSIGNU signature checks for the root transaction.
    */
   ignoreChksig?: boolean
   /**
@@ -409,16 +409,17 @@ export interface EmulatedMessage {
   hash: string
   source: string | null
   destination: string | null
-  value: string
+  value: string | null
   value_extra_currencies: Record<string, unknown>
-  fwd_fee: string
-  ihr_fee: string
-  created_lt: string
+  fwd_fee: string | null
+  ihr_fee: string | null
+  extra_flags: string | null
+  created_lt: string | null
   created_at: string | null
   opcode: string | number | null
-  ihr_disabled: boolean
-  bounce: boolean
-  bounced: boolean
+  ihr_disabled: boolean | null
+  bounce: boolean | null
+  bounced: boolean | null
   import_fee: string | null
   message_content: {
     hash: string

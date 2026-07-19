@@ -119,7 +119,8 @@ through to the caller.
 
 Use `emulateRawMessage` to execute a serialized inbound message from a chosen masterchain state.
 The message may be passed as a `Cell`, a hex BoC, or a base64 BoC. Internal messages emitted by a
-transaction are executed in order against an in-memory account-state cache.
+transaction are executed in order against an in-memory account-state cache. `ignoreChksig` applies
+only to the root transaction; signature checks remain enabled for the rest of the cascade.
 
 ```ts
 import {emulateRawMessage, RETRACE_TESTNET_NETWORK} from "@ton/retracer-core"
