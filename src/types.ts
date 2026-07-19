@@ -32,6 +32,75 @@ export interface RetraceOptions {
   sourceMap?: TolkSourceMapData
 }
 
+export interface EmulateRawMessageOptions extends RetraceOptions {
+  /**
+   * Masterchain block seqno whose resulting account state and config should be used.
+   * When omitted, the latest masterchain block is used.
+   */
+  mcSeqno?: number
+  /**
+   * Override transaction unix timestamp. Defaults to the selected block generation time.
+   */
+  now?: number
+  /**
+   * Override transaction logical time. Defaults to selected block end_lt + 1.
+   */
+  lt?: bigint
+  /**
+   * Ask TVM to ignore CHKSIG/CHKSIGNU signature checks during emulation.
+   */
+  ignoreChksig?: boolean
+  /**
+   * Maximum number of transactions to emulate from the message cascade. Defaults to 128.
+   */
+  maxTransactions?: number
+  /**
+   * Optional starting account states keyed by account address.
+   */
+  accountStateOverrides?: Record<string, EmulateRawMessageAccountStateOverride>
+}
+
+export interface EmulateRawMessageAccountStateOverride {
+  /** Full ShardAccount BoC encoded as hex or base64. */
+  shardAccountBoc?: string
+  /** Override account balance in nanotons. */
+  balance?: bigint | string
+  /** Override account code/data state. */
+  state?: EmulateRawMessageAccountStateDataOverride
+  /**
+   * Override ShardAccount last transaction lt. AccountStorage lastTransLt defaults
+   * to zero for LT zero, and to this LT plus one otherwise.
+   */
+  lastTransactionLt?: bigint | string
+  /** Override ShardAccount last transaction hash. */
+  lastTransactionHash?: bigint | string
+  /** Override AccountStorage lastTransLt separately from ShardAccount lt. */
+  storageLastTransactionLt?: bigint | string
+}
+
+export type EmulateRawMessageAccountStateDataOverride =
+  | EmulateRawMessageAccountActiveStateOverride
+  | EmulateRawMessageAccountUninitStateOverride
+  | EmulateRawMessageAccountFrozenStateOverride
+
+export interface EmulateRawMessageAccountActiveStateOverride {
+  type: "active"
+  /** Omit to preserve code, or use null to clear it. */
+  codeBoc?: string | null
+  /** Omit to preserve data, or use null to clear it. */
+  dataBoc?: string | null
+}
+
+export interface EmulateRawMessageAccountUninitStateOverride {
+  type: "uninit"
+}
+
+export interface EmulateRawMessageAccountFrozenStateOverride {
+  type: "frozen"
+  /** Preserve the current frozen hash when possible, otherwise default to zero. */
+  stateHash?: bigint | string
+}
+
 /**
  * Tolk compiler output required to map TVM execution back to source locations.
  */
@@ -266,6 +335,8 @@ export interface Description {
   }
   credit_ph?: {
     credit: string
+    credit_extra_currencies?: Record<string, string>
+    due_fees_collected?: string
   }
   compute_ph?: {
     skipped: boolean
@@ -303,6 +374,16 @@ export interface Description {
       bits?: string
     }
   }
+  bounce?: {
+    type: string
+    msg_size?: {
+      cells: string
+      bits: string
+    }
+    req_fwd_fees?: string
+    msg_fees?: string
+    fwd_fees?: string
+  }
 }
 
 export interface BlockRef {
@@ -321,6 +402,85 @@ export interface AccountState {
   frozen_hash: string | null
   data_hash: string
   code_hash: string
+}
+
+/** A message synthesized locally by {@link EmulateRawMessageResult}. */
+export interface EmulatedMessage {
+  hash: string
+  source: string | null
+  destination: string | null
+  value: string
+  value_extra_currencies: Record<string, unknown>
+  fwd_fee: string
+  ihr_fee: string
+  created_lt: string
+  created_at: string | null
+  opcode: string | number | null
+  ihr_disabled: boolean
+  bounce: boolean
+  bounced: boolean
+  import_fee: string | null
+  message_content: {
+    hash: string
+    body: string
+    decoded: Record<string, unknown> | null
+  }
+  init_state: {
+    hash: string
+    body: string
+  } | null
+}
+
+/** Account state synthesized from the exact ShardAccount used by local emulation. */
+export interface EmulatedAccountState {
+  hash: string
+  balance: string | null
+  code_boc: string | null
+  extra_currencies: Record<string, string>
+  account_status: string
+  data_boc: string | null
+  frozen_hash: string | null
+  data_hash: string | null
+  code_hash: string | null
+}
+
+export interface EmulatedTransaction
+  extends Omit<
+    Transaction,
+    "description" | "in_msg" | "out_msgs" | "account_state_before" | "account_state_after"
+  > {
+  description: EmulatedDescription
+  in_msg: EmulatedMessage | null
+  out_msgs: EmulatedMessage[]
+  account_state_before: EmulatedAccountState
+  account_state_after: EmulatedAccountState
+  child_transactions: readonly string[]
+}
+
+/** Toncenter-shaped description whose skipped compute phase remains intentionally sparse. */
+export interface EmulatedDescription extends Omit<Description, "compute_ph"> {
+  compute_ph?: EmulatedComputePhase
+}
+
+export interface EmulatedComputePhase
+  extends Omit<NonNullable<Description["compute_ph"]>, "success" | "exit_code"> {
+  success?: boolean
+  exit_code?: number
+}
+
+export interface EmulatedTraceNode {
+  tx_hash: string
+  in_msg_hash?: string
+  in_msg?: EmulatedMessage | null
+  transaction?: EmulatedTransaction
+  children?: readonly EmulatedTraceNode[]
+}
+
+export interface EmulatedTrace
+  extends Omit<Trace, "trace" | "transactions" | "transactions_order"> {
+  trace: EmulatedTraceNode
+  transactions: Record<string, EmulatedTransaction>
+  transactions_order: readonly string[]
 }
 
 // Raw transaction BoC paired with the shard block that contains it.
@@ -556,6 +716,22 @@ export interface TraceReplayResult {
     /** Executor source commit hash. */
     commitHash: string
     /** Executor source commit date. */
+    commitDate: string
+  }
+}
+
+/** Result of emulating a raw inbound message and every internal message it produces. */
+export interface EmulateRawMessageResult {
+  rootTxHash: string
+  transactions: Record<string, TraceResult>
+  trace: EmulatedTrace
+  /**
+   * Always true: raw-message emulation has no on-chain state update to compare against.
+   * Individual account snapshots are available in each transaction result.
+   */
+  stateUpdateHashOk: true
+  emulatorVersion: {
+    commitHash: string
     commitDate: string
   }
 }

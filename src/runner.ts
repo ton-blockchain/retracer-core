@@ -3,8 +3,14 @@ import {
   Address,
   beginCell,
   Cell,
+  type AccountState as CoreAccountState,
+  loadMessage,
   loadShardAccount,
   loadTransaction,
+  type Message,
+  type ShardAccount,
+  storeShardAccount,
+  storeStateInit,
   storeTransaction,
   type Transaction,
 } from "@ton/core"
@@ -16,6 +22,7 @@ import {
   computeFinalData,
   detectPrevBlocksUsage,
   emulatePreviousTransactions,
+  extractRawTransactionMessageCells,
   findAllTransactionsBetween,
   findBaseTxByHash,
   findFinalActions,
@@ -26,13 +33,23 @@ import {
   getBlockConfig,
   getLibraryByHash,
   getPrevBlocksInfo,
+  getShardAccountAtBlock,
   prepareEmulator,
   shardAccountToBase64,
 } from "./methods"
-import {toncenterHashToBuffer, toncenterV3Get} from "./networks"
+import {toncenterHashToBuffer, toncenterV2Get, toncenterV3Get} from "./networks"
 import {buildSourceTraceForTraceResult} from "./sourceTrace"
 import type {
   Block,
+  BlockRef,
+  Description,
+  EmulatedAccountState,
+  EmulatedDescription,
+  EmulatedMessage,
+  EmulatedTrace,
+  EmulatedTransaction,
+  EmulateRawMessageOptions,
+  EmulateRawMessageResult,
   RawTransaction,
   RetraceNetworkConfig,
   RetraceOptions,
@@ -159,12 +176,37 @@ interface TraceReplayEmulation {
   stateUpdateHashOk: boolean
 }
 
+interface RawMessageBlockContext {
+  mcSeqno: number
+  blockConfig: string
+  randSeed: Buffer
+  now: number
+  lt: bigint
+  getPrevBlocksInfo: (with100: boolean) => Promise<PrevBlocksInfo | undefined>
+}
+
+interface GetMasterchainInfoResponse {
+  ok: boolean
+  error?: string
+  code?: number
+  result?: {
+    last?: {
+      seqno?: number
+    }
+  }
+}
+
 class MissingLibraryError extends Error {
   public constructor(public readonly library: [bigint, Cell]) {
     super(`Missing library ${library[0].toString(16)}`)
     this.name = "MissingLibraryError"
   }
 }
+
+const DEFAULT_RAW_MESSAGE_MAX_TRANSACTIONS = 128
+const MAX_UINT32 = 4_294_967_295
+const MAX_UINT64 = (1n << 64n) - 1n
+const MAX_UINT256 = (1n << 256n) - 1n
 
 /**
  * Reproduce every transaction in the complete message trace containing `txHash`.
@@ -262,6 +304,250 @@ export const retraceTrace = async (
       stateUpdateHashOk: Object.values(results).every(result => result.stateUpdateHashOk),
       emulatorVersion: firstResult.emulatorVersion,
     }
+  }
+}
+
+/**
+ * Emulate a serialized inbound message and every internal message produced by it.
+ *
+ * The emulation starts from the state produced by `options.mcSeqno`, or the latest
+ * masterchain block when no seqno is provided. Unlike {@link retraceTrace}, this method
+ * does not compare the resulting state updates with on-chain transactions.
+ */
+export const emulateRawMessage = async (
+  network: RetraceNetworkConfig,
+  rawMessage: Cell | string,
+  options: EmulateRawMessageOptions = {},
+): Promise<EmulateRawMessageResult> => {
+  const messageCell = rawMessage instanceof Cell ? rawMessage : parseRawMessageCell(rawMessage)
+  const dynamicLibs = [...(options.additionalLibs ?? [])]
+  const loadedDynamicLibraries = new Set(dynamicLibs.map(([hash]) => hash.toString(16)))
+
+  for (;;) {
+    const result = await emulateRawMessageCascade(network, messageCell, {
+      ...options,
+      additionalLibs: dynamicLibs,
+    })
+
+    let missingLibrary: [bigint, Cell] | undefined
+    for (const traceResult of Object.values(result.transactions)) {
+      const library = await tryLoadMissingLibraryFromResult(traceResult, network)
+      if (!library) {
+        continue
+      }
+
+      const [hash] = library
+      const hashKey = hash.toString(16)
+      if (loadedDynamicLibraries.has(hashKey)) {
+        throw new Error(`Library ${hashKey} is still unavailable after loading`)
+      }
+      missingLibrary = library
+      loadedDynamicLibraries.add(hashKey)
+      break
+    }
+
+    if (missingLibrary) {
+      dynamicLibs.push(missingLibrary)
+      continue
+    }
+
+    return result
+  }
+}
+
+interface RawMessageQueueItem {
+  message: Message
+  messageCell: Cell
+  parentHash?: string
+}
+
+interface RawMessageAccountState {
+  shardAccountBase64: string
+  balance: bigint
+}
+
+interface RawMessageEmulatedTransaction {
+  hash: string
+  parentHash?: string
+  inMessageHash: string
+  address: Address
+  transaction: Transaction
+  inMessageCell: Cell
+  outMessageCells: ReadonlyMap<number, Cell>
+  traceResult: TraceResult
+  shardAccountBefore: string
+  shardAccountAfter: string
+}
+
+async function emulateRawMessageCascade(
+  network: RetraceNetworkConfig,
+  messageCell: Cell,
+  options: EmulateRawMessageOptions,
+): Promise<EmulateRawMessageResult> {
+  const message = loadMessage(messageCell.asSlice())
+  const destination = message.info.dest
+  if (!Address.isAddress(destination)) {
+    throw new Error("Raw message destination must be an account address")
+  }
+
+  const mcSeqno = await resolveEmulationMcSeqno(network, options.mcSeqno)
+  const blockContext = await loadRawMessageBlockContext(network, mcSeqno, options)
+  const maxTransactions = resolveRawMessageMaxTransactions(options.maxTransactions)
+  const accountStates = await buildRawMessageAccountStateOverrides(
+    network,
+    mcSeqno,
+    options.accountStateOverrides,
+  )
+  const queue: RawMessageQueueItem[] = [{message, messageCell}]
+  const emulatedTransactions: RawMessageEmulatedTransaction[] = []
+  let nextTransactionLt = blockContext.lt
+
+  while (queue.length > 0) {
+    if (emulatedTransactions.length >= maxTransactions) {
+      throw new Error(`Raw message emulation exceeded ${maxTransactions} transactions`)
+    }
+
+    const item = queue.shift()
+    if (!item) {
+      continue
+    }
+    const txDestination = messageDestination(item.message)
+    if (!txDestination) {
+      continue
+    }
+
+    const accountState = await loadRawMessageAccountState(
+      network,
+      blockContext.mcSeqno,
+      txDestination,
+      accountStates,
+    )
+    const accountBeforeRun = loadShardAccount(
+      Cell.fromBase64(accountState.shardAccountBase64).asSlice(),
+    )
+    const messageTx = {inMessage: item.message} as Transaction
+    const [libs, loadedCode] = await collectUsedLibraries(
+      network,
+      accountBeforeRun,
+      messageTx,
+      options.additionalLibs ?? [],
+    )
+    const codeCell = accountCodeCell(accountBeforeRun, messageTx)
+    const prevBlocksUsage = detectPrevBlocksUsage([codeCell, loadedCode])
+    const prevBlocksInfo = prevBlocksUsage.needed
+      ? await blockContext.getPrevBlocksInfo(prevBlocksUsage.with100)
+      : undefined
+
+    const {emulatorVersion, emulateMessage} = await prepareEmulator(
+      blockContext.blockConfig,
+      libs,
+      blockContext.randSeed,
+      prevBlocksInfo,
+      {ignoreChksig: options.ignoreChksig},
+    )
+    const incomingCreatedLt =
+      item.message.info.type === "internal" ? item.message.info.createdLt : 0n
+    const transactionLt =
+      nextTransactionLt > incomingCreatedLt ? nextTransactionLt : incomingCreatedLt + 1n
+    const transactionResult = await emulateMessage(
+      item.messageCell,
+      accountState.shardAccountBase64,
+      blockContext.now,
+      transactionLt,
+    )
+    if (!transactionResult.result.success) {
+      throw new Error(`Message emulation failed: ${transactionResult.result.error}`)
+    }
+
+    const transactionCell = Cell.fromBase64(transactionResult.result.transaction)
+    const emulatedTransaction = loadTransaction(transactionCell.asSlice())
+    const transactionMessageCells = extractRawTransactionMessageCells(emulatedTransaction)
+    const inMessageCell = transactionMessageCells.inMessage
+    if (!inMessageCell) {
+      throw new Error("Emulated transaction does not contain its inbound message")
+    }
+    nextTransactionLt = emulatedTransaction.lt + 1n
+    const hash = transactionCell.hash().toString("hex")
+    const emulation: TraceReplayEmulation = {
+      emulatorVersion,
+      logs: transactionResult.logs,
+      result: transactionResult.result,
+      prevBalance: accountState.balance,
+      shardAccountBeforeTargetBase64: accountState.shardAccountBase64,
+      stateUpdateHashOk: true,
+    }
+    const baseTx: BaseTxInfo = {
+      lt: emulatedTransaction.lt,
+      hash: Buffer.from(hash, "hex"),
+      address: txDestination,
+      block: rawMessageBlockRef(blockContext),
+    }
+    const builtTraceResult = await buildTraceResult({
+      baseTx,
+      tx: emulatedTransaction,
+      emulation,
+      loadedCode,
+      codeCell,
+      sourceMap: options.sourceMap,
+    })
+    const traceResult: TraceResult = {
+      ...builtTraceResult,
+      emulatedTx: {
+        ...builtTraceResult.emulatedTx,
+        raw: transactionCell.toBoc().toString("hex"),
+      },
+    }
+
+    accountStates.set(txDestination.toString(), {
+      shardAccountBase64: transactionResult.result.shardAccount,
+      balance:
+        loadShardAccount(Cell.fromBase64(transactionResult.result.shardAccount).asSlice()).account
+          ?.storage.balance.coins ?? 0n,
+    })
+
+    emulatedTransactions.push({
+      hash,
+      parentHash: item.parentHash,
+      inMessageHash: inMessageCell.hash().toString("hex"),
+      address: txDestination,
+      transaction: emulatedTransaction,
+      inMessageCell,
+      outMessageCells: transactionMessageCells.outMessages,
+      traceResult,
+      shardAccountBefore: accountState.shardAccountBase64,
+      shardAccountAfter: transactionResult.result.shardAccount,
+    })
+
+    for (const [index, outMessage] of emulatedTransaction.outMessages) {
+      if (!messageDestination(outMessage)) {
+        continue
+      }
+      const outMessageCell = transactionMessageCells.outMessages.get(index)
+      if (!outMessageCell) {
+        throw new Error(`Cannot extract raw outgoing message ${index}`)
+      }
+
+      queue.push({
+        message: outMessage,
+        messageCell: outMessageCell,
+        parentHash: hash,
+      })
+    }
+  }
+
+  const root = emulatedTransactions.at(0)
+  if (!root) {
+    throw new Error("Raw message did not produce transactions")
+  }
+
+  return {
+    rootTxHash: root.hash,
+    transactions: Object.fromEntries(
+      emulatedTransactions.map(transaction => [transaction.hash, transaction.traceResult] as const),
+    ),
+    trace: buildRawMessageToncenterTrace(root.hash, emulatedTransactions, blockContext),
+    stateUpdateHashOk: true,
+    emulatorVersion: root.traceResult.emulatorVersion,
   }
 }
 
@@ -851,6 +1137,297 @@ async function buildTraceResult({
   return result
 }
 
+function parseRawMessageCell(rawMessage: string): Cell {
+  return parseBocCell(rawMessage, "Raw message")
+}
+
+async function buildRawMessageAccountStateOverrides(
+  network: RetraceNetworkConfig,
+  mcSeqno: number,
+  overrides: EmulateRawMessageOptions["accountStateOverrides"] = {},
+): Promise<Map<string, RawMessageAccountState>> {
+  const accountStates = new Map<string, RawMessageAccountState>()
+
+  for (const [addressString, override] of Object.entries(overrides)) {
+    const address = Address.parse(addressString)
+    const shardAccountBoc = override.shardAccountBoc
+    const baseShardAccount =
+      shardAccountBoc !== undefined
+        ? loadShardAccount(parseBocCell(shardAccountBoc, "Account state override").asSlice())
+        : await getShardAccountAtBlock(network, address, mcSeqno)
+    if (baseShardAccount.account && !baseShardAccount.account.addr.equals(address)) {
+      throw new Error(`Account state override address does not match ${address.toString()}`)
+    }
+    const shardAccount = applyRawMessageAccountStateOverride(address, baseShardAccount, override)
+    const shardAccountCell = beginCell().store(storeShardAccount(shardAccount)).endCell()
+    accountStates.set(address.toString(), {
+      shardAccountBase64: shardAccountCell.toBoc().toString("base64"),
+      balance: shardAccount.account?.storage.balance.coins ?? 0n,
+    })
+  }
+
+  return accountStates
+}
+
+function applyRawMessageAccountStateOverride(
+  address: Address,
+  shardAccount: ShardAccount,
+  override: NonNullable<EmulateRawMessageOptions["accountStateOverrides"]>[string],
+): ShardAccount {
+  const lastTransactionLt = parseOptionalUint(
+    override.lastTransactionLt,
+    "lastTransactionLt",
+    MAX_UINT64,
+  )
+  if (lastTransactionLt === MAX_UINT64) {
+    throw new Error("lastTransactionLt must leave room for the next transaction")
+  }
+  const lastTransactionHash = parseOptionalUint(
+    override.lastTransactionHash,
+    "lastTransactionHash",
+    MAX_UINT256,
+  )
+  const storageLastTransactionLtOverride = parseOptionalUint(
+    override.storageLastTransactionLt,
+    "storageLastTransactionLt",
+    MAX_UINT64,
+  )
+  const storageLastTransactionLt =
+    storageLastTransactionLtOverride ??
+    (lastTransactionLt === undefined
+      ? undefined
+      : lastTransactionLt === 0n
+        ? 0n
+        : lastTransactionLt + 1n)
+
+  const accountRequired =
+    override.balance !== undefined ||
+    override.state !== undefined ||
+    storageLastTransactionLt !== undefined
+  const baseAccount = shardAccount.account ?? (accountRequired ? createEmptyAccount(address) : null)
+
+  const nextShardAccount: ShardAccount = {
+    account: baseAccount,
+    lastTransactionHash: lastTransactionHash ?? shardAccount.lastTransactionHash,
+    lastTransactionLt: lastTransactionLt ?? shardAccount.lastTransactionLt,
+  }
+
+  if (baseAccount) {
+    const balance = parseOptionalUint(override.balance, "balance")
+    nextShardAccount.account = {
+      ...baseAccount,
+      storage: {
+        ...baseAccount.storage,
+        lastTransLt: storageLastTransactionLt ?? baseAccount.storage.lastTransLt,
+        balance:
+          balance === undefined
+            ? baseAccount.storage.balance
+            : {
+                ...baseAccount.storage.balance,
+                coins: balance,
+              },
+        state: override.state
+          ? applyRawMessageAccountStateDataOverride(baseAccount.storage.state, override.state)
+          : baseAccount.storage.state,
+      },
+    }
+  }
+
+  return nextShardAccount
+}
+
+function createEmptyAccount(address: Address): NonNullable<ShardAccount["account"]> {
+  return {
+    addr: address,
+    storageStats: {
+      used: {
+        bits: 0n,
+        cells: 0n,
+      },
+      storageExtra: null,
+      lastPaid: 0,
+      duePayment: null,
+    },
+    storage: {
+      lastTransLt: 0n,
+      balance: {
+        coins: 0n,
+      },
+      state: {
+        type: "uninit",
+      },
+    },
+  }
+}
+
+function applyRawMessageAccountStateDataOverride(
+  baseState: CoreAccountState,
+  override: NonNullable<EmulateRawMessageOptions["accountStateOverrides"]>[string]["state"],
+): CoreAccountState {
+  if (!override) {
+    return baseState
+  }
+
+  if (override.type === "uninit") {
+    return {type: "uninit"}
+  }
+
+  if (override.type === "frozen") {
+    return {
+      type: "frozen",
+      stateHash:
+        parseOptionalUint(override.stateHash, "stateHash", MAX_UINT256) ??
+        (baseState.type === "frozen" ? baseState.stateHash : 0n),
+    }
+  }
+
+  const baseActiveState = baseState.type === "active" ? baseState.state : {}
+  const code = parseOptionalOverrideCell(override.codeBoc, "codeBoc", baseActiveState.code)
+  const data = parseOptionalOverrideCell(override.dataBoc, "dataBoc", baseActiveState.data)
+
+  return {
+    type: "active",
+    state: {
+      ...baseActiveState,
+      code,
+      data,
+    },
+  }
+}
+
+function parseOptionalOverrideCell(
+  value: string | null | undefined,
+  label: string,
+  fallback: Cell | null | undefined,
+): Cell | null | undefined {
+  if (value === undefined) {
+    return fallback
+  }
+  if (value === null) {
+    return null
+  }
+  return parseBocCell(value, label)
+}
+
+function parseOptionalBigInt(
+  value: bigint | string | undefined,
+  label: string,
+): bigint | undefined {
+  if (value === undefined) {
+    return undefined
+  }
+  if (typeof value === "bigint") {
+    return value
+  }
+  const trimmed = value.trim()
+  if (!trimmed) {
+    return undefined
+  }
+  try {
+    return BigInt(trimmed)
+  } catch {
+    throw new Error(`${label} must be an integer`)
+  }
+}
+
+function parseOptionalUint(
+  value: bigint | string | undefined,
+  label: string,
+  maximum?: bigint,
+): bigint | undefined {
+  const parsed = parseOptionalBigInt(value, label)
+  if (parsed === undefined) {
+    return undefined
+  }
+  if (parsed < 0n) {
+    throw new Error(`${label} must be a non-negative integer`)
+  }
+  if (maximum !== undefined && parsed > maximum) {
+    throw new Error(`${label} is out of range`)
+  }
+  return parsed
+}
+
+function parseBocCell(value: string, label: string): Cell {
+  const trimmed = value.trim()
+  if (!trimmed) {
+    throw new Error(`${label} cannot be empty`)
+  }
+
+  try {
+    return Cell.fromHex(trimmed.replace(/^0x/i, ""))
+  } catch {
+    try {
+      return Cell.fromBase64(trimmed)
+    } catch {
+      throw new Error(`${label} must be a Cell BoC encoded as hex or base64`)
+    }
+  }
+}
+
+async function resolveEmulationMcSeqno(
+  network: RetraceNetworkConfig,
+  mcSeqno: number | undefined,
+): Promise<number> {
+  if (mcSeqno !== undefined) {
+    if (!Number.isSafeInteger(mcSeqno) || mcSeqno < 0) {
+      throw new Error("Masterchain block seqno must be a non-negative safe integer")
+    }
+    return mcSeqno
+  }
+
+  const response = await toncenterV2Get<GetMasterchainInfoResponse>(
+    network,
+    "getMasterchainInfo",
+    {},
+  )
+  const latestSeqno = response.result?.last?.seqno
+  if (typeof latestSeqno !== "number" || !Number.isSafeInteger(latestSeqno)) {
+    throw new Error("getMasterchainInfo response is missing result.last.seqno")
+  }
+
+  return latestSeqno
+}
+
+async function loadRawMessageBlockContext(
+  network: RetraceNetworkConfig,
+  mcSeqno: number,
+  options: EmulateRawMessageOptions,
+): Promise<RawMessageBlockContext> {
+  const blockConfig = await getBlockConfig(network, mcSeqno)
+  const blocksResponse = await toncenterV3Get<{blocks: Block[]}>(network, "blocks", {
+    workchain: -1,
+    shard: "8000000000000000",
+    seqno: mcSeqno,
+  })
+  const block = blocksResponse.blocks.at(0)
+  if (!block) {
+    throw new Error(`Cannot find masterchain block ${mcSeqno}`)
+  }
+  const previousBlocks = new Map<string, Promise<PrevBlocksInfo | undefined>>()
+  const getCachedPrevBlocksInfo = async (with100: boolean): Promise<PrevBlocksInfo | undefined> => {
+    if (mcSeqno <= 1) {
+      return undefined
+    }
+    const key = with100 ? "full" : "short"
+    let request = previousBlocks.get(key)
+    if (!request) {
+      request = getPrevBlocksInfo(network, mcSeqno, {with100})
+      previousBlocks.set(key, request)
+    }
+    return request
+  }
+
+  return {
+    mcSeqno,
+    blockConfig,
+    randSeed: blockRandSeed(block),
+    now: rawMessageUnixTime(block, options.now),
+    lt: rawMessageStartLt(block, options.lt),
+    getPrevBlocksInfo: getCachedPrevBlocksInfo,
+  }
+}
+
 function blockRandSeed(block: Block): Buffer {
   const value = block.rand_seed.trim()
   if (!value) {
@@ -861,6 +1438,514 @@ function blockRandSeed(block: Block): Buffer {
     throw new Error("Block rand_seed must contain 32 bytes")
   }
   return buffer
+}
+
+function blockUnixTime(block: Block): number {
+  const value = Number(block.gen_utime)
+  if (!Number.isSafeInteger(value) || value < 0 || value > MAX_UINT32) {
+    throw new Error("Block gen_utime must be a valid uint32")
+  }
+  return value
+}
+
+function blockNextLt(block: Block): bigint {
+  let value: bigint
+  try {
+    value = BigInt(block.end_lt)
+  } catch {
+    throw new Error("Block end_lt must be a non-negative integer")
+  }
+  if (value < 0n) {
+    throw new Error("Block end_lt must be a non-negative integer")
+  }
+  return value + 1n
+}
+
+function rawMessageUnixTime(block: Block, override: number | undefined): number {
+  const value = override ?? blockUnixTime(block)
+  if (!Number.isSafeInteger(value) || value < 0 || value > MAX_UINT32) {
+    throw new Error("Message emulation time must be a valid uint32")
+  }
+  return value
+}
+
+function rawMessageStartLt(block: Block, override: bigint | undefined): bigint {
+  const value = override ?? blockNextLt(block)
+  if (typeof value !== "bigint" || value < 0n || value > MAX_UINT64) {
+    throw new Error("Message emulation lt must be a valid uint64 bigint")
+  }
+  return value
+}
+
+function resolveRawMessageMaxTransactions(value: number | undefined): number {
+  if (value === undefined) {
+    return DEFAULT_RAW_MESSAGE_MAX_TRANSACTIONS
+  }
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new Error("maxTransactions must be a positive safe integer")
+  }
+  return value
+}
+
+function messageDestination(message: Message): Address | undefined {
+  const destination = message.info.dest
+  return Address.isAddress(destination) ? destination : undefined
+}
+
+async function loadRawMessageAccountState(
+  network: RetraceNetworkConfig,
+  mcSeqno: number,
+  address: Address,
+  accountStates: Map<string, RawMessageAccountState>,
+): Promise<RawMessageAccountState> {
+  const accountKey = address.toString()
+  const cached = accountStates.get(accountKey)
+  if (cached) {
+    return cached
+  }
+
+  const shardAccount = await getShardAccountAtBlock(network, address, mcSeqno)
+  const state = {
+    shardAccountBase64: shardAccountToBase64(shardAccount),
+    balance: shardAccount.account?.storage.balance.coins ?? 0n,
+  }
+  accountStates.set(accountKey, state)
+  return state
+}
+
+function rawMessageBlockRef(blockContext: RawMessageBlockContext): BlockRef {
+  return {
+    workchain: -1,
+    shard: "8000000000000000",
+    seqno: blockContext.mcSeqno,
+  }
+}
+
+function buildRawMessageToncenterTrace(
+  rootHash: string,
+  emulatedTransactions: readonly RawMessageEmulatedTransaction[],
+  blockContext: RawMessageBlockContext,
+): EmulatedTrace {
+  const childrenByParent = new Map<string, RawMessageEmulatedTransaction[]>()
+  for (const transaction of emulatedTransactions) {
+    if (!transaction.parentHash) {
+      continue
+    }
+    childrenByParent.set(transaction.parentHash, [
+      ...(childrenByParent.get(transaction.parentHash) ?? []),
+      transaction,
+    ])
+  }
+
+  const childTransactionsByParent = new Map<string, string[]>()
+  for (const [parentHash, children] of childrenByParent) {
+    childTransactionsByParent.set(
+      parentHash,
+      children.map(child => child.transaction.lt.toString()),
+    )
+  }
+
+  const transactions: Record<string, EmulatedTransaction> = Object.fromEntries(
+    emulatedTransactions.map(transaction => [
+      transaction.hash,
+      rawMessageApiTransaction(
+        transaction,
+        blockContext,
+        childTransactionsByParent.get(transaction.hash) ?? [],
+        rootHash,
+      ),
+    ]),
+  )
+  const orderedHashes = emulatedTransactions.map(transaction => transaction.hash)
+  const startLt = emulatedTransactions.at(0)?.transaction.lt ?? blockContext.lt
+  const endLt = emulatedTransactions.at(-1)?.transaction.lt ?? startLt
+
+  const rootTransaction = emulatedTransactions.at(0)
+  const rootMessage = rootTransaction?.transaction.inMessage
+
+  return {
+    trace_id: rootHash,
+    external_hash:
+      rootMessage?.info.type === "external-in" ? (rootTransaction?.inMessageHash ?? null) : null,
+    mc_seqno_start: blockContext.mcSeqno.toString(),
+    mc_seqno_end: blockContext.mcSeqno.toString(),
+    start_lt: startLt.toString(),
+    start_utime: blockContext.now,
+    end_lt: endLt.toString(),
+    end_utime: blockContext.now,
+    is_incomplete: false,
+    trace: buildRawMessageTraceNode(rootHash, emulatedTransactions, childrenByParent),
+    transactions,
+    transactions_order: orderedHashes,
+    trace_info: {
+      transactions: emulatedTransactions.length,
+      messages: emulatedTransactions.reduce(
+        (sum, transaction) => sum + transaction.transaction.outMessagesCount,
+        1,
+      ),
+      pending_messages: 0,
+      trace_state: "complete",
+      classification_state: "unavailable",
+    },
+  }
+}
+
+function buildRawMessageTraceNode(
+  hash: string,
+  emulatedTransactions: readonly RawMessageEmulatedTransaction[],
+  childrenByParent: ReadonlyMap<string, readonly RawMessageEmulatedTransaction[]>,
+): EmulatedTrace["trace"] {
+  const transaction = emulatedTransactions.find(item => item.hash === hash)
+  return {
+    tx_hash: hash,
+    in_msg_hash: transaction?.inMessageHash,
+    in_msg: transaction?.transaction.inMessage
+      ? rawMessageApiMessage(transaction.transaction.inMessage, transaction.inMessageCell)
+      : null,
+    children: (childrenByParent.get(hash) ?? []).map(child =>
+      buildRawMessageTraceNode(child.hash, emulatedTransactions, childrenByParent),
+    ),
+  }
+}
+
+function rawMessageApiTransaction(
+  item: RawMessageEmulatedTransaction,
+  blockContext: RawMessageBlockContext,
+  childTransactions: readonly string[] = [],
+  traceId: string = item.hash,
+): EmulatedTransaction {
+  const transaction = item.transaction
+  return {
+    account: item.address.toRawString(),
+    hash: item.hash,
+    lt: transaction.lt.toString(),
+    now: transaction.now,
+    mc_block_seqno: blockContext.mcSeqno,
+    trace_id: traceId,
+    prev_trans_hash: uint256Hex(transaction.prevTransactionHash),
+    prev_trans_lt: transaction.prevTransactionLt.toString(),
+    orig_status: accountStatusToApi(transaction.oldStatus),
+    end_status: accountStatusToApi(transaction.endStatus),
+    total_fees: transaction.totalFees.coins.toString(),
+    total_fees_extra_currencies: extraCurrenciesToApi(transaction.totalFees.other),
+    description: transactionDescriptionToApi(transaction.description),
+    block_ref: rawMessageBlockRef(blockContext),
+    in_msg: transaction.inMessage
+      ? rawMessageApiMessage(transaction.inMessage, item.inMessageCell)
+      : null,
+    out_msgs: [...transaction.outMessages].map(([index, message]) => {
+      const messageCell = item.outMessageCells.get(index)
+      if (!messageCell) {
+        throw new Error(`Cannot extract raw outgoing message ${index}`)
+      }
+      return rawMessageApiMessage(message, messageCell)
+    }),
+    account_state_before: shardAccountToApiState(item.shardAccountBefore),
+    account_state_after: shardAccountToApiState(item.shardAccountAfter),
+    child_transactions: childTransactions,
+    emulated: true,
+  }
+}
+
+function rawMessageApiMessage(message: Message, messageCell: Cell): EmulatedMessage {
+  const body = message.body
+  const initCell = message.init ? beginCell().store(storeStateInit(message.init)).endCell() : null
+  const opcode = messageOpcode(message)
+  const common = {
+    hash: messageCell.hash().toString("hex"),
+    opcode: opcode ?? null,
+    message_content: {
+      hash: body.hash().toString("hex"),
+      body: body.toBoc().toString("base64"),
+      decoded: null,
+    },
+    init_state: initCell
+      ? {
+          hash: initCell.hash().toString("hex"),
+          body: initCell.toBoc().toString("base64"),
+        }
+      : null,
+  }
+
+  if (message.info.type === "internal") {
+    return {
+      ...common,
+      source: message.info.src.toString(),
+      destination: message.info.dest.toString(),
+      value: message.info.value.coins.toString(),
+      value_extra_currencies: extraCurrenciesToApi(message.info.value.other),
+      fwd_fee: message.info.forwardFee.toString(),
+      ihr_fee: message.info.ihrFee.toString(),
+      import_fee: "0",
+      created_lt: message.info.createdLt.toString(),
+      created_at: message.info.createdAt.toString(),
+      ihr_disabled: message.info.ihrDisabled,
+      bounce: message.info.bounce,
+      bounced: message.info.bounced,
+    }
+  }
+
+  if (message.info.type === "external-in") {
+    return {
+      ...common,
+      source: null,
+      destination: message.info.dest.toString(),
+      value: "0",
+      value_extra_currencies: {},
+      fwd_fee: "0",
+      ihr_fee: "0",
+      import_fee: message.info.importFee.toString(),
+      created_lt: "0",
+      created_at: null,
+      ihr_disabled: true,
+      bounce: false,
+      bounced: false,
+    }
+  }
+
+  return {
+    ...common,
+    source: message.info.src.toString(),
+    destination: null,
+    value: "0",
+    value_extra_currencies: {},
+    fwd_fee: "0",
+    ihr_fee: "0",
+    import_fee: null,
+    created_lt: message.info.createdLt.toString(),
+    created_at: message.info.createdAt.toString(),
+    ihr_disabled: true,
+    bounce: false,
+    bounced: false,
+  }
+}
+
+function shardAccountToApiState(shardAccountBase64: string): EmulatedAccountState {
+  const cell = Cell.fromBase64(shardAccountBase64)
+  const shardAccount = loadShardAccount(cell.asSlice())
+  const account = shardAccount.account
+  const storageState = account?.storage.state
+  const activeState = storageState?.type === "active" ? storageState.state : undefined
+  const code = activeState?.code ?? undefined
+  const data = activeState?.data ?? undefined
+
+  return {
+    hash: cell.hash().toString("hex"),
+    balance: account?.storage.balance.coins.toString() ?? null,
+    code_boc: code?.toBoc().toString("base64") ?? null,
+    extra_currencies: extraCurrenciesToApi(account?.storage.balance.other),
+    account_status: shardAccountStatusToApi(shardAccount),
+    data_boc: data?.toBoc().toString("base64") ?? null,
+    frozen_hash: storageState?.type === "frozen" ? hashLikeToHex(storageState.stateHash) : null,
+    data_hash: data?.hash().toString("hex") ?? null,
+    code_hash: code?.hash().toString("hex") ?? null,
+  }
+}
+
+function transactionDescriptionToApi(description: Transaction["description"]): EmulatedDescription {
+  if (description.type === "tick-tock") {
+    return {
+      type: "tick_tock",
+      aborted: description.aborted,
+      destroyed: description.destroyed,
+      is_tock: description.isTock,
+      storage_ph: storagePhaseToApi(description.storagePhase),
+      compute_ph: computePhaseToApi(description.computePhase),
+      action: actionPhaseToApi(description.actionPhase),
+    }
+  }
+
+  if (description.type !== "generic") {
+    return {
+      type: description.type,
+      aborted: false,
+      destroyed: false,
+      compute_ph: {
+        skipped: true,
+        reason: "unsupported",
+      },
+    }
+  }
+
+  return {
+    type: "ord",
+    aborted: description.aborted,
+    destroyed: description.destroyed,
+    credit_first: description.creditFirst,
+    storage_ph: storagePhaseToApi(description.storagePhase),
+    credit_ph: creditPhaseToApi(description.creditPhase),
+    compute_ph: computePhaseToApi(description.computePhase),
+    action: actionPhaseToApi(description.actionPhase),
+    bounce: bouncePhaseToApi(description.bouncePhase),
+  }
+}
+
+function creditPhaseToApi(
+  phase: Extract<Transaction["description"], {type: "generic"}>["creditPhase"],
+): Description["credit_ph"] {
+  if (!phase) {
+    return undefined
+  }
+
+  return {
+    credit: phase.credit.coins.toString(),
+    credit_extra_currencies: extraCurrenciesToApi(phase.credit.other),
+    due_fees_collected: phase.dueFeesColelcted?.toString(),
+  }
+}
+
+function bouncePhaseToApi(
+  phase: Extract<Transaction["description"], {type: "generic"}>["bouncePhase"],
+): Description["bounce"] {
+  if (!phase) {
+    return undefined
+  }
+
+  if (phase.type === "negative-funds") {
+    return {type: phase.type}
+  }
+
+  const messageSize = {
+    cells: phase.messageSize.cells.toString(),
+    bits: phase.messageSize.bits.toString(),
+  }
+  if (phase.type === "no-funds") {
+    return {
+      type: phase.type,
+      msg_size: messageSize,
+      req_fwd_fees: phase.requiredForwardFees.toString(),
+    }
+  }
+
+  return {
+    type: phase.type,
+    msg_size: messageSize,
+    msg_fees: phase.messageFees.toString(),
+    fwd_fees: phase.forwardFees.toString(),
+  }
+}
+
+function storagePhaseToApi(
+  phase:
+    | {
+        storageFeesCollected: bigint
+        storageFeesDue?: bigint | null
+        statusChange: string
+      }
+    | null
+    | undefined,
+): Description["storage_ph"] {
+  if (!phase) {
+    return undefined
+  }
+
+  return {
+    storage_fees_collected: phase.storageFeesCollected.toString(),
+    storage_fees_due: phase.storageFeesDue?.toString(),
+    status_change: phase.statusChange,
+  }
+}
+
+function computePhaseToApi(
+  phase: Extract<Transaction["description"], {type: "generic" | "tick-tock"}>["computePhase"],
+): NonNullable<EmulatedDescription["compute_ph"]> {
+  if (phase.type === "skipped") {
+    return {
+      skipped: true,
+      reason: phase.reason,
+    }
+  }
+
+  return {
+    skipped: false,
+    success: phase.success,
+    msg_state_used: phase.messageStateUsed,
+    account_activated: phase.accountActivated,
+    gas_fees: phase.gasFees.toString(),
+    gas_used: phase.gasUsed.toString(),
+    gas_limit: phase.gasLimit.toString(),
+    gas_credit: phase.gasCredit?.toString(),
+    mode: phase.mode,
+    exit_code: phase.exitCode,
+    exit_arg: phase.exitArg ?? undefined,
+    vm_steps: phase.vmSteps,
+    vm_init_state_hash: uint256Hex(phase.vmInitStateHash),
+    vm_final_state_hash: uint256Hex(phase.vmFinalStateHash),
+  }
+}
+
+function actionPhaseToApi(
+  phase: Extract<Transaction["description"], {type: "generic" | "tick-tock"}>["actionPhase"],
+): Description["action"] {
+  if (!phase) {
+    return undefined
+  }
+
+  return {
+    success: phase.success,
+    valid: phase.valid,
+    no_funds: phase.noFunds,
+    status_change: phase.statusChange,
+    result_code: phase.resultCode,
+    result_arg: phase.resultArg ?? undefined,
+    tot_actions: phase.totalActions,
+    spec_actions: phase.specActions,
+    skipped_actions: phase.skippedActions,
+    msgs_created: phase.messagesCreated,
+    total_fwd_fees: phase.totalFwdFees?.toString(),
+    total_action_fees: phase.totalActionFees?.toString(),
+    action_list_hash: uint256Hex(phase.actionListHash),
+    tot_msg_size: {
+      cells: phase.totalMessageSize.cells.toString(),
+      bits: phase.totalMessageSize.bits.toString(),
+    },
+  }
+}
+
+function extraCurrenciesToApi(
+  currencies: Iterable<readonly [number, bigint]> | null | undefined,
+): Record<string, string> {
+  return currencies
+    ? Object.fromEntries([...currencies].map(([id, amount]) => [id.toString(), amount.toString()]))
+    : {}
+}
+
+function shardAccountStatusToApi(shardAccount: ShardAccount): string {
+  const state = shardAccount.account?.storage.state
+  return state?.type ?? "nonexist"
+}
+
+function accountStatusToApi(status: Transaction["oldStatus"]): string {
+  if (status === "uninitialized") {
+    return "uninit"
+  }
+  if (status === "non-existing") {
+    return "nonexist"
+  }
+  return status
+}
+
+function messageOpcode(message: Message): number | undefined {
+  const isBounced = message.info.type === "internal" ? message.info.bounced : false
+  const slice = message.body.asSlice()
+  if (isBounced) {
+    if (slice.remainingBits < 32) {
+      return undefined
+    }
+    slice.loadUint(32)
+  }
+  return slice.remainingBits >= 32 ? slice.loadUint(32) : undefined
+}
+
+function uint256Hex(value: bigint | undefined): string {
+  return (value ?? 0n).toString(16).padStart(64, "0")
+}
+
+function hashLikeToHex(value: bigint | Buffer | undefined): string | null {
+  if (value === undefined) {
+    return null
+  }
+  return typeof value === "bigint" ? uint256Hex(value) : value.toString("hex")
 }
 
 async function tryLoadMissingLibraryFromResult(

@@ -6,6 +6,7 @@
 
 - **Detailed transaction tracing**: Emulate transaction execution in an environment identical to TON blockchain's mainnet.
 - **Full trace replay**: Reproduce every transaction in a trace while preserving the canonical transaction order and per-account state.
+- **Raw-message emulation**: Execute a serialized inbound message and its internal-message cascade without an existing on-chain transaction.
 - **Block and account data collection**: Obtain account state snapshots, block configuration, and transaction history.
 - **Work with libraries and contracts**: Automatic loading and handling of exotic library cells.
 - **Analysis of incoming/outgoing messages, balance calculations, and VM log collection.**
@@ -114,6 +115,45 @@ when the trace is missing, empty, references unavailable transactions, cannot lo
 context or libraries, or when transaction emulation fails. Network and Toncenter errors are passed
 through to the caller.
 
+### Raw Message Emulation
+
+Use `emulateRawMessage` to execute a serialized inbound message from a chosen masterchain state.
+The message may be passed as a `Cell`, a hex BoC, or a base64 BoC. Internal messages emitted by a
+transaction are executed in order against an in-memory account-state cache.
+
+```ts
+import {emulateRawMessage, RETRACE_TESTNET_NETWORK} from "@ton/retracer-core"
+
+const emulation = await emulateRawMessage(RETRACE_TESTNET_NETWORK, rawMessageBoc, {
+  mcSeqno: 42_000_000,
+  ignoreChksig: true,
+  maxTransactions: 64,
+  accountStateOverrides: {
+    [contractAddress.toString()]: {
+      balance: 10_000_000_000n,
+      state: {
+        type: "active",
+        codeBoc: compiledCode.toBoc().toString("base64"),
+        dataBoc: initialData.toBoc().toString("base64"),
+      },
+    },
+  },
+})
+
+console.log(emulation.rootTxHash)
+console.log(emulation.trace.trace)
+console.log(emulation.transactions[emulation.rootTxHash])
+```
+
+When `mcSeqno` is omitted, the latest masterchain block is used. `now` and `lt` can override the
+execution timestamp and initial logical time. Account overrides can start from a complete
+`shardAccountBoc` and then replace its balance, state, or last-transaction metadata.
+
+The returned `EmulateRawMessageResult` contains detailed `TraceResult` values and a synthetic
+Toncenter-shaped `EmulatedTrace`. Its `stateUpdateHashOk` value is always `true` for compatibility;
+raw-message emulation has no on-chain state update to compare against, so it must not be interpreted
+as an on-chain verification result. `maxTransactions` bounds the cascade and defaults to 128.
+
 ### Helper Methods
 
 All methods are exported from `retracer-core` and can be used independently:
@@ -125,6 +165,7 @@ All methods are exported from `retracer-core` and can be used independently:
 - **findAllTransactionsBetween(network, baseTx, minLt)** — Get all account transactions in a given range.
 - **getBlockConfig(network, mcSeqno)** — Get global config for a masterchain block.
 - **getBlockAccount(network, address, mcSeqno)** — Get account snapshot before a masterchain block.
+- **getShardAccountAtBlock(network, address, mcSeqno)** — Get the exact account snapshot produced by a masterchain block.
 - **collectUsedLibraries(network, account, tx)** — Collect used library cells.
 - **prepareEmulator(blockConfig, libs, randSeed)** — Prepare the emulator for transaction execution.
 - **emulatePreviousTransactions(...)** — Emulate a chain of previous transactions to restore the state.

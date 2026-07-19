@@ -481,12 +481,22 @@ export const getBlockAccount = async (
   // back to the current block's state as best approximation.
   // stateUpdateHashOk will be false for genesis transactions.
   const seqno = mcSeqno > 1 ? mcSeqno - 1 : mcSeqno
+
+  return getShardAccountAtBlock(network, address, seqno)
+}
+
+/** Load the exact ShardAccount snapshot produced by a masterchain block. */
+export const getShardAccountAtBlock = async (
+  network: RetraceNetworkConfig,
+  address: Address,
+  mcSeqno: number,
+): Promise<ShardAccount> => {
   const {result} = await toncenterV2Get<GetShardAccountCellResponse>(
     network,
     "getShardAccountCell",
     {
       address: toncenterAddressParam(network, address),
-      seqno,
+      seqno: mcSeqno,
     },
   )
   if (typeof result !== "object" || typeof result.bytes !== "string") {
@@ -680,25 +690,37 @@ export const prepareEmulator = async (
   libs: Cell | undefined,
   randSeed: Buffer,
   prevBlocksInfo?: PrevBlocksInfo,
+  options: {ignoreChksig?: boolean} = {},
 ) => {
   const executor = await Executor.create()
   const emulatorVersion = executor.getVersion()
+  const ignoreChksig = options.ignoreChksig ?? false
 
   async function emulate(tx: Transaction, shardAccountBase64: string): Promise<EmulationResult> {
     const inMsg = tx.inMessage
     if (!inMsg) throw new Error("No in_message was found in transaction")
     const messageCell =
       extractRawInMessageCell(tx) ?? beginCell().store(storeMessage(inMsg)).endCell()
+
+    return emulateMessage(messageCell, shardAccountBase64, tx.now, tx.lt)
+  }
+
+  async function emulateMessage(
+    message: Cell,
+    shardAccountBase64: string,
+    now: number,
+    lt: bigint,
+  ): Promise<EmulationResult> {
     return executor.runTransaction({
       config: blockConfig,
       libs: libs ?? null,
       verbosity: "full_location_stack_verbose",
       shardAccount: shardAccountBase64,
-      message: messageCell,
-      now: tx.now,
-      lt: tx.lt,
+      message,
+      now,
+      lt,
       randomSeed: randSeed,
-      ignoreChksig: false,
+      ignoreChksig,
       debugEnabled: true,
       prevBlocksInfo,
     })
@@ -718,13 +740,13 @@ export const prepareEmulator = async (
       now: tx.now,
       lt: tx.lt,
       randomSeed: randSeed,
-      ignoreChksig: false,
+      ignoreChksig,
       debugEnabled: true,
       prevBlocksInfo,
     })
   }
 
-  return {emulatorVersion, emulate, emulateTickTock}
+  return {emulatorVersion, emulate, emulateTickTock, emulateMessage}
 }
 
 /**
@@ -736,25 +758,33 @@ export const prepareEmulator = async (
  */
 function extractRawInMessageCell(tx: Transaction): Cell | null {
   try {
-    const s = tx.raw.beginParse()
-    s.loadUint(4) // transaction tag
-    s.loadBuffer(32) // account_addr
-    s.loadUintBig(64) // lt
-    s.loadBuffer(32) // prev_trans_hash
-    s.loadUintBig(64) // prev_trans_lt
-    s.loadUint(32) // now
-    s.loadUint(15) // outmsg_cnt
-    s.loadUint(2) // orig_status
-    s.loadUint(2) // end_status
-    const inOut = s.loadRef().beginParse() // ^[ in_msg out_msgs ]
-    const hasInMessage = inOut.loadBit()
-    if (!hasInMessage) {
-      return null
-    }
-    return inOut.loadRef()
+    return extractRawTransactionMessageCells(tx).inMessage ?? null
   } catch {
     return null
   }
+}
+
+/** Extract the exact message cells embedded in a raw transaction without re-serializing them. */
+export function extractRawTransactionMessageCells(tx: Transaction): {
+  inMessage?: Cell
+  outMessages: ReadonlyMap<number, Cell>
+} {
+  const slice = tx.raw.beginParse()
+  slice.loadUint(4) // transaction tag
+  slice.loadBuffer(32) // account_addr
+  slice.loadUintBig(64) // lt
+  slice.loadBuffer(32) // prev_trans_hash
+  slice.loadUintBig(64) // prev_trans_lt
+  slice.loadUint(32) // now
+  slice.loadUint(15) // outmsg_cnt
+  slice.loadUint(2) // orig_status
+  slice.loadUint(2) // end_status
+
+  const inOut = slice.loadRef().beginParse() // ^[ in_msg out_msgs ]
+  const inMessage = inOut.loadBit() ? inOut.loadRef() : undefined
+  const outMessages = inOut.loadDict(Dictionary.Keys.Uint(15), Dictionary.Values.Cell())
+  inOut.endParse()
+  return {inMessage, outMessages: new Map(outMessages)}
 }
 
 /**
